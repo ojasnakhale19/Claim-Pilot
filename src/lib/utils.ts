@@ -157,3 +157,239 @@ export function filterBy<T>(array: T[], predicates: Partial<Record<keyof T, unkn
     })
   );
 }
+
+// ─── API Client ─────────────────────────────────────────────────────────────
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
+export interface DamageDetection {
+  damage_type: string;
+  confidence: number;
+  bounding_box_xyxy: number[];
+}
+
+export interface ViewResult {
+  detection_count: number;
+  detections: DamageDetection[];
+  annotated_image_base64?: string;
+}
+
+export interface AssessmentResponse {
+  assessment_id: string;
+  created_at: string;
+  workflow: string;
+  model_name: string;
+  confidence_threshold: number;
+  image_size: number;
+  views: Record<string, ViewResult>;
+  detection_counts_by_class: Record<string, number>;
+  total_detections: number;
+  review_required: boolean;
+  review_flags: Array<{ code: string; view: string; message: string }>;
+  validation: Record<string, any>;
+  limitations: string[];
+  estimated_repair_cost_min: number;
+  estimated_repair_cost_max: number;
+  settlement_offer: number;
+  settlement_min: number;
+  settlement_max: number;
+  severity: 'minor' | 'moderate' | 'severe' | 'uncertain';
+  primary_component: string;
+  damage_summary: string;
+}
+
+export interface GeneralAssessmentResponse {
+  assessment_id: string;
+  created_at: string;
+  model_name: string;
+  confidence_threshold: number;
+  image_size: number;
+  images_analyzed: number;
+  results: Array<{
+    file_index: number;
+    filename: string;
+    detection_count: number;
+    detections: DamageDetection[];
+    annotated_image_base64?: string;
+    error?: string;
+  }>;
+  total_detections: number;
+  estimated_repair_cost_min: number;
+  estimated_repair_cost_max: number;
+  settlement_offer: number;
+  settlement_min: number;
+  settlement_max: number;
+  severity: 'minor' | 'moderate' | 'severe' | 'uncertain';
+  primary_component: string;
+  damage_summary: string;
+  review_required: boolean;
+}
+
+export interface ModelInfo {
+  model_name: string;
+  model_type: string;
+  task: string;
+  classes: string[];
+}
+
+export interface HealthCheck {
+  status: string;
+  service: string;
+}
+
+async function handleResponse<T>(response: Response): Promise<T> {
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+    throw new Error(error.detail || `HTTP ${response.status}: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export async function checkHealth(): Promise<HealthCheck> {
+  const response = await fetch(`${API_BASE_URL}/health`);
+  return handleResponse(response);
+}
+
+export async function getModelInfo(): Promise<ModelInfo> {
+  const response = await fetch(`${API_BASE_URL}/model/info`);
+  return handleResponse(response);
+}
+
+export interface FourViewAssessmentRequest {
+  top: File;
+  bottom: File;
+  left: File;
+  right: File;
+  confidence_threshold?: number;
+  image_size?: number;
+}
+
+export async function assessFourView(request: FourViewAssessmentRequest): Promise<AssessmentResponse> {
+  const formData = new FormData();
+  formData.append('top', request.top);
+  formData.append('bottom', request.bottom);
+  formData.append('left', request.left);
+  formData.append('right', request.right);
+  formData.append('confidence_threshold', String(request.confidence_threshold ?? 0.25));
+  formData.append('image_size', String(request.image_size ?? 640));
+
+  const response = await fetch(`${API_BASE_URL}/assess/four-view`, {
+    method: 'POST',
+    body: formData,
+  });
+  return handleResponse(response);
+}
+
+export interface GeneralAssessmentRequest {
+  files: File[];
+  confidence_threshold?: number;
+  image_size?: number;
+}
+
+export async function assessGeneral(request: GeneralAssessmentRequest): Promise<GeneralAssessmentResponse> {
+  const formData = new FormData();
+  request.files.forEach(file => formData.append('files', file));
+  formData.append('confidence_threshold', String(request.confidence_threshold ?? 0.25));
+  formData.append('image_size', String(request.image_size ?? 640));
+
+  const response = await fetch(`${API_BASE_URL}/assess/general`, {
+    method: 'POST',
+    body: formData,
+  });
+  return handleResponse(response);
+}
+
+// Convert base64 to data URL for display
+export function base64ToDataUrl(base64: string, mimeType = 'image/jpeg'): string {
+  return `data:${mimeType};base64,${base64}`;
+}
+
+// ─── Hybrid AI Assessment ───────────────────────────────────────────────────
+
+export interface HybridAssessmentRequest {
+  vehicle: {
+    make: string;
+    model: string;
+    year?: number;
+    variant?: string;
+  };
+  views: Record<string, string>; // base64 encoded images
+  detections: Record<string, DamageDetection[]>;
+  confidence_threshold?: number;
+  image_size?: number;
+}
+
+export interface HybridDamageItem {
+  component: string;
+  view: string;
+  detectionIds: string[];
+  damageType: string;
+  severity: 'minor' | 'moderate' | 'severe' | 'uncertain';
+  evidence: string[];
+  confidence: number;
+  recommendation: 'repair' | 'replace' | 'inspect' | 'undetermined';
+  reasoning: string;
+  assumptions: string[];
+}
+
+export interface HybridAIObservation {
+  component: string;
+  view: string;
+  description: string;
+  severity: 'minor' | 'moderate' | 'severe' | 'uncertain';
+  confidence: number;
+  reasoning: string;
+  boundingBoxHint?: { x: number; y: number; width: number; height: number };
+}
+
+export interface HybridDuplicateWarning {
+  detectionIds: string[];
+  views: string[];
+  message: string;
+}
+
+export interface HybridAssessmentResponse {
+  assessment_id: string;
+  created_at: string;
+  workflow: string;
+  model_name: string;
+  ai_provider: string;
+  ai_model: string;
+  damage_items: HybridDamageItem[];
+  ai_observations: HybridAIObservation[];
+  duplicate_warnings: HybridDuplicateWarning[];
+  overall_reasoning: string;
+  confidence: number;
+  limitations: string[];
+  estimated_repair_cost_min: number;
+  estimated_repair_cost_max: number;
+  settlement_offer: number;
+  settlement_min: number;
+  settlement_max: number;
+  severity: 'minor' | 'moderate' | 'severe' | 'uncertain';
+  primary_component: string;
+  damage_summary: string;
+  review_required: boolean;
+}
+
+export async function assessHybrid(request: HybridAssessmentRequest): Promise<HybridAssessmentResponse> {
+  const response = await fetch(`${API_BASE_URL}/assess/hybrid`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return handleResponse(response);
+}
+
+export interface AIProviderStatus {
+  provider: string;
+  gemini_configured: boolean;
+  gemini_model: string;
+  openai_configured: boolean;
+  openai_model: string;
+  hybrid_available: boolean;
+}
+
+export async function getAIProviderStatus(): Promise<AIProviderStatus> {
+  const response = await fetch(`${API_BASE_URL}/ai/provider/status`);
+  return handleResponse(response);
+}

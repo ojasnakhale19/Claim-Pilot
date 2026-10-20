@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Check, Upload, Trash2, ChevronLeft, ChevronRight, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
+import { Check, Upload, Trash2, ChevronLeft, ChevronRight, Loader2, CheckCircle, AlertCircle, Brain } from 'lucide-react';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { Textarea } from '../components/ui/Textarea';
@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { Progress } from '../components/ui/Progress';
-import { cn, isValidImageFile, isValidVideoFile, createObjectURL, revokeObjectURL, getFileSizeString } from '../lib/utils';
+import { cn, isValidImageFile, isValidVideoFile, createObjectURL, revokeObjectURL, getFileSizeString, assessGeneral, type GeneralAssessmentResponse } from '../lib/utils';
 import { formatCurrency } from '../data/mockClaims';
 
 const STEPS = [
@@ -69,6 +69,8 @@ export function NewAssessmentPage() {
   const [analysisProgress, setAnalysisProgress] = useState(0);
   const [analysisStep, setAnalysisStep] = useState(0);
   const [showAssessmentResult, setShowAssessmentResult] = useState(false);
+  const [assessmentResult, setAssessmentResult] = useState<GeneralAssessmentResponse | null>(null);
+  const [useAIAssessment, setUseAIAssessment] = useState(false);
 
   const analysisSteps = [
     'Reviewing uploaded evidence...',
@@ -183,20 +185,51 @@ export function NewAssessmentPage() {
   const handleAnalyze = async () => {
     if (!validateStep(2)) return;
 
-    setIsAnalyzing(true);
-    setAnalysisProgress(0);
-    setAnalysisStep(0);
+    if (useAIAssessment) {
+      // Real AI assessment via backend API
+      setIsAnalyzing(true);
+      setAnalysisProgress(0);
+      setAnalysisStep(0);
 
-    for (let i = 0; i < analysisSteps.length; i++) {
-      await new Promise(resolve => setTimeout(resolve, 800));
-      setAnalysisStep(i + 1);
-      setAnalysisProgress(Math.round(((i + 1) / analysisSteps.length) * 100));
+      try {
+        for (let i = 0; i < analysisSteps.length; i++) {
+          await new Promise(resolve => setTimeout(resolve, 800));
+          setAnalysisStep(i + 1);
+          setAnalysisProgress(Math.round(((i + 1) / analysisSteps.length) * 100));
+        }
+
+        const result = await assessGeneral({
+          files: uploadedFiles.map(f => f.file),
+          confidence_threshold: 0.25,
+          image_size: 640,
+        });
+
+        await new Promise(resolve => setTimeout(resolve, 500));
+        setIsAnalyzing(false);
+        setAssessmentResult(result);
+        setShowAssessmentResult(true);
+        setCurrentStep(3);
+      } catch (error: any) {
+        setIsAnalyzing(false);
+        alert(`AI Assessment failed: ${error.message}`);
+      }
+    } else {
+      // Demo mode - simulated analysis
+      setIsAnalyzing(true);
+      setAnalysisProgress(0);
+      setAnalysisStep(0);
+
+      for (let i = 0; i < analysisSteps.length; i++) {
+        await new Promise(resolve => setTimeout(resolve, 800));
+        setAnalysisStep(i + 1);
+        setAnalysisProgress(Math.round(((i + 1) / analysisSteps.length) * 100));
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 500));
+      setIsAnalyzing(false);
+      setShowAssessmentResult(true);
+      setCurrentStep(3);
     }
-
-    await new Promise(resolve => setTimeout(resolve, 500));
-    setIsAnalyzing(false);
-    setShowAssessmentResult(true);
-    setCurrentStep(3);
   };
 
   const handleNext = () => {
@@ -462,7 +495,81 @@ export function NewAssessmentPage() {
             ))}
           </div>
         </div>
+      ) : showAssessmentResult && assessmentResult && useAIAssessment ? (
+        // Real AI Assessment Results
+        <div className="space-y-4">
+          <div className="rounded-lg border border-success-200 bg-success-50 p-4">
+            <div className="flex items-start gap-3">
+              <CheckCircle className="h-5 w-5 text-success-600 shrink-0 mt-0.5" />
+              <div>
+                <h3 className="font-medium text-success-800">AI Assessment Complete</h3>
+                <p className="text-sm text-success-700">{assessmentResult.damage_summary}</p>
+              </div>
+            </div>
+          </div>
+          <div className="rounded-lg border border-border bg-white p-4">
+            <h4 className="font-medium text-slate-900 mb-3">Assessment Summary</h4>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-lg border border-border p-3">
+                <p className="text-xs text-slate-500">Total Detections</p>
+                <p className="text-lg font-bold text-slate-900">{assessmentResult.total_detections}</p>
+              </div>
+              <div className="rounded-lg border border-border p-3">
+                <p className="text-xs text-slate-500">Total Est. Repair Cost</p>
+                <p className="text-lg font-bold text-slate-900">
+                  {formatCurrency(assessmentResult.estimated_repair_cost_min)}–{formatCurrency(assessmentResult.estimated_repair_cost_max)}
+                </p>
+              </div>
+              <div className="rounded-lg border border-border p-3">
+                <p className="text-xs text-slate-500">Severity</p>
+                <p className="text-lg font-bold text-slate-900 capitalize">{assessmentResult.severity}</p>
+              </div>
+              <div className="rounded-lg border border-border p-3">
+                <p className="text-xs text-slate-500">Settlement Offer</p>
+                <p className="text-lg font-bold text-success-600">{formatCurrency(assessmentResult.settlement_offer)}</p>
+              </div>
+            </div>
+          </div>
+          <div className="rounded-lg border border-border bg-white p-4">
+            <h4 className="font-medium text-slate-900 mb-3">Identified Damage by Image</h4>
+            <div className="space-y-2">
+              {assessmentResult.results.map((result, idx) => (
+                <div key={idx} className="rounded-lg border border-border p-3 bg-slate-50">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="font-medium text-slate-900">{result.filename}</p>
+                    <Badge variant={result.detection_count > 0 ? 'default' : 'secondary'}>
+                      {result.detection_count} detections
+                    </Badge>
+                  </div>
+                  {result.error ? (
+                    <p className="text-sm text-danger-600">Error: {result.error}</p>
+                  ) : result.detections.length === 0 ? (
+                    <p className="text-sm text-slate-500">No damage detected</p>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      {result.detections.map((det, i) => (
+                        <Badge key={i} variant="outline" className="gap-1">
+                          {det.damage_type} <span className="font-mono">{(det.confidence * 100).toFixed(1)}%</span>
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+          {assessmentResult.review_required && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+              <h4 className="font-medium text-amber-800 mb-2 flex items-center gap-2">
+                <AlertCircle className="h-4 w-4" />
+                Review Required
+              </h4>
+              <p className="text-sm text-amber-700">The AI assessment has flags that require human review.</p>
+            </div>
+          )}
+        </div>
       ) : showAssessmentResult ? (
+        // Demo mode results (original)
         <div className="space-y-4">
           <div className="rounded-lg border border-success-200 bg-success-50 p-4">
             <div className="flex items-start gap-3">
@@ -542,7 +649,28 @@ export function NewAssessmentPage() {
           <h1 className="text-2xl font-bold text-slate-900">New Damage Assessment</h1>
           <p className="mt-1 text-slate-500">Create a new claim and run AI-powered damage analysis</p>
         </div>
-        <Badge variant="warning" className="text-xs">DEMO MODE</Badge>
+        <div className="flex items-center gap-3">
+          <Badge variant="warning" className="text-xs">DEMO MODE</Badge>
+          <div className="flex items-center gap-2 bg-slate-100 rounded-xl p-1 border border-slate-200">
+            <Button
+              variant={useAIAssessment ? 'default' : 'ghost'}
+              size="sm"
+              onClick={() => setUseAIAssessment(true)}
+              className="rounded-lg"
+            >
+              <Brain className="h-3.5 w-3.5 mr-1" />
+              AI Analysis
+            </Button>
+            <Button
+              variant={!useAIAssessment ? 'default' : 'ghost'}
+              size="sm"
+              onClick={() => setUseAIAssessment(false)}
+              className="rounded-lg"
+            >
+              Demo Mode
+            </Button>
+          </div>
+        </div>
       </div>
 
       {renderStepIndicator()}

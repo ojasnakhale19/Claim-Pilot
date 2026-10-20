@@ -83,6 +83,22 @@ export function DamageAnnotation({ assessment, photos, onContinue, onAddMorePhot
   const [showAnnotations, setShowAnnotations] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Mock damage regions for annotation (in real app, these would come from AI)
+  // Must be called before any early returns to maintain hook order
+  const damageRegions = useMemo(() => {
+    if (!assessment || !photos[0]) return [];
+    const data = assessment.data;
+    const regions = [
+      { id: '1', label: 'Front Bumper', x: 45, y: 55, width: 35, height: 20, severity: 'high' as const },
+      { id: '2', label: 'Headlight Assembly', x: 30, y: 40, width: 15, height: 15, severity: 'medium' as const },
+      { id: '3', label: 'Grille', x: 60, y: 50, width: 20, height: 10, severity: 'low' as const },
+    ];
+    // Filter based on severity
+    if (data.severity === 'minor') return regions.slice(0, 1);
+    if (data.severity === 'moderate') return regions.slice(0, 2);
+    return regions;
+  }, [assessment, photos]);
+
   useEffect(() => {
     setMounted(true);
     setTimeout(() => setShowAnnotations(true), 300);
@@ -108,20 +124,6 @@ export function DamageAnnotation({ assessment, photos, onContinue, onAddMorePhot
   const config = SEVERITY_CONFIG[assessment.type];
   const IconComponent = config.icon;
   const data = assessment.data;
-
-  // Mock damage regions for annotation (in real app, these would come from AI)
-  const damageRegions = useMemo(() => {
-    if (!photos[0]) return [];
-    const regions = [
-      { id: '1', label: 'Front Bumper', x: 45, y: 55, width: 35, height: 20, severity: 'high' as const },
-      { id: '2', label: 'Headlight Assembly', x: 30, y: 40, width: 15, height: 15, severity: 'medium' as const },
-      { id: '3', label: 'Grille', x: 60, y: 50, width: 20, height: 10, severity: 'low' as const },
-    ];
-    // Filter based on severity
-    if (data.severity === 'minor') return regions.slice(0, 1);
-    if (data.severity === 'moderate') return regions.slice(0, 2);
-    return regions;
-  }, [photos, data.severity]);
 
   return (
     <div className="space-y-6 animate-in" ref={containerRef}>
