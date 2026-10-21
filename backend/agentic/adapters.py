@@ -26,11 +26,19 @@ def pick_primary_detection(detections: list[dict]) -> Optional[dict]:
 
 def _normalize_damage_type(raw: str) -> str:
     s = (raw or "").strip().lower()
-    # normalize common variants
+    # normalize common variants - match CarDD 6 classes
     if "scratch" in s:
         return "scratch"
     if "dent" in s:
         return "dent"
+    if "crack" in s:
+        return "crack"
+    if "glass" in s and "shatter" in s:
+        return "glass_shatter"
+    if "lamp" in s and "broken" in s:
+        return "lamp_broken"
+    if "tire" in s and "flat" in s:
+        return "tire_flat"
     if "paint" in s:
         return "paint_damage"
     if "broken" in s:

@@ -5,6 +5,18 @@ import { CardHeader, CardContent, CardFooter } from '../ui/Card';
 import { Badge } from '../ui/Badge';
 import { cn, formatNumber } from '../../lib/utils';
 
+interface DamageDetection {
+  damage_type: string;
+  confidence: number;
+  bounding_box_xyxy: number[];
+}
+
+interface ViewResult {
+  detection_count: number;
+  detections: DamageDetection[];
+  annotated_image_base64?: string;
+}
+
 interface DamageAnnotationProps {
   assessment: {
     type: 'minor' | 'moderate' | 'severe' | 'uncertain';
@@ -22,6 +34,7 @@ interface DamageAnnotationProps {
     };
   } | null;
   photos: Array<{ id: string; preview: string }>;
+  views: Record<string, ViewResult> | null;
   onContinue: () => void;
   onAddMorePhotos: () => void;
   onHumanReview: () => void;
@@ -78,26 +91,169 @@ const SEVERITY_CONFIG: Record<'minor' | 'moderate' | 'severe' | 'uncertain', Sev
   },
 };
 
-export function DamageAnnotation({ assessment, photos, onContinue, onAddMorePhotos, onHumanReview }: DamageAnnotationProps) {
+// Map damage class to display name
+const DAMAGE_CLASS_LABELS: Record<string, string> = {
+  dent: 'Dent',
+  scratch: 'Scratch',
+  crack: 'Crack',
+  'glass shatter': 'Glass Shatter',
+  glass_shatter: 'Glass Shatter',
+  'lamp broken': 'Lamp Broken',
+  lamp_broken: 'Lamp Broken',
+  'tire flat': 'Tire Flat',
+  tire_flat: 'Tire Flat',
+};
+
+// Severity color mapping for detection markers
+const SEVERITY_STYLES = {
+  high: { borderColor: 'rgba(239, 68, 68, 0.8)', bgColor: 'rgba(239, 68, 68, 0.15)', labelBg: 'bg-danger-500' },
+  medium: { borderColor: 'rgba(245, 158, 11, 0.8)', bgColor: 'rgba(245, 158, 11, 0.15)', labelBg: 'bg-amber-500' },
+  low: { borderColor: 'rgba(34, 197, 94, 0.8)', bgColor: 'rgba(34, 197, 94, 0.15)', labelBg: 'bg-success-500' },
+};
+
+function getSeverityStyle(confidence: number) {
+  if (confidence >= 0.7) return SEVERITY_STYLES.high;
+  if (confidence >= 0.4) return SEVERITY_STYLES.medium;
+  return SEVERITY_STYLES.low;
+}
+
+function formatDamageType(className: string): string {
+  return DAMAGE_CLASS_LABELS[className.toLowerCase()] || className.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+interface DamageRegionMarkerProps {
+  region: { 
+    id: string; 
+    label: string; 
+    x: number; 
+    y: number; 
+    width: number; 
+    height: number; 
+    confidence: number;
+    className: string;
+  };
+  index: number;
+}
+
+function DamageRegionMarker({ region, index }: DamageRegionMarkerProps) {
+  const style = getSeverityStyle(region.confidence);
+
+  return (
+    <motion.div
+      className="absolute pointer-events-none"
+      style={{
+        left: `${region.x}%`,
+        top: `${region.y}%`,
+        width: `${region.width}%`,
+        height: `${region.height}%`,
+        transform: 'translate(-50%, -50%)',
+      }}
+      initial={{ scale: 0, opacity: 0 }}
+      animate={{ scale: 1, opacity: 1 }}
+      exit={{ scale: 0, opacity: 0 }}
+      transition={{ duration: 0.4, delay: 0.6 + index * 0.15, ease: [0.34, 1.56, 0.64, 1] }}
+    >
+      {/* Pulsing outline */}
+      <motion.div
+        className="absolute inset-0 rounded-lg border-2"
+        style={{ borderColor: style.borderColor, backgroundColor: style.bgColor }}
+        animate={{
+          boxShadow: [
+            `0 0 0 0 ${style.borderColor}`,
+            `0 0 20px 8px ${style.borderColor.replace('0.8', '0')}`,
+            `0 0 0 0 ${style.borderColor}`,
+          ],
+        }}
+        transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
+      />
+
+      {/* Corner markers */}
+      <div className="absolute inset-0" aria-hidden="true">
+        {['tl', 'tr', 'bl', 'br'].map(pos => (
+          <div
+            key={pos}
+            className="absolute w-3 h-3 border-2"
+            style={{
+              top: pos.includes('t') ? 0 : 'auto',
+              bottom: pos.includes('b') ? 0 : 'auto',
+              left: pos.includes('l') ? 0 : 'auto',
+              right: pos.includes('r') ? 0 : 'auto',
+              borderColor: style.borderColor,
+            }}
+          />
+        ))}
+      </div>
+
+      {/* Label */}
+      <motion.div
+        className="absolute -top-7 left-1/2 -translate-x-1/2 whitespace-nowrap"
+        initial={{ opacity: 0, y: 5 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.8 + index * 0.15 }}
+      >
+        <span className={cn(
+          'px-2 py-1 rounded text-[10px] font-mono font-medium text-background shadow-lg',
+          style.labelBg
+        )}>
+          {region.label}
+        </span>
+        <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-0.5 h-2" style={{ backgroundColor: style.borderColor }} />
+      </motion.div>
+    </motion.div>
+  );
+}
+
+export function DamageAnnotation({ assessment, photos, views, onContinue, onAddMorePhotos, onHumanReview }: DamageAnnotationProps) {
   const [mounted, setMounted] = useState(false);
   const [showAnnotations, setShowAnnotations] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Mock damage regions for annotation (in real app, these would come from AI)
-  // Must be called before any early returns to maintain hook order
+  // Generate damage regions from actual backend detections
   const damageRegions = useMemo(() => {
-    if (!assessment || !photos[0]) return [];
-    const data = assessment.data;
-    const regions = [
-      { id: '1', label: 'Front Bumper', x: 45, y: 55, width: 35, height: 20, severity: 'high' as const },
-      { id: '2', label: 'Headlight Assembly', x: 30, y: 40, width: 15, height: 15, severity: 'medium' as const },
-      { id: '3', label: 'Grille', x: 60, y: 50, width: 20, height: 10, severity: 'low' as const },
-    ];
-    // Filter based on severity
-    if (data.severity === 'minor') return regions.slice(0, 1);
-    if (data.severity === 'moderate') return regions.slice(0, 2);
+    if (!assessment || !views) return [];
+    
+    const regions: Array<{
+      id: string;
+      label: string;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      confidence: number;
+      className: string;
+    }> = [];
+    
+    let regionId = 0;
+    
+    // Process each view's detections
+    Object.entries(views).forEach(([_viewName, viewData]) => {
+      viewData.detections.forEach((detection, _detIndex) => {
+        const [x1, y1, x2, y2] = detection.bounding_box_xyxy;
+        const width = x2 - x1;
+        const height = y2 - y1;
+        const centerX = (x1 + x2) / 2;
+        const centerY = (y1 + y2) / 2;
+        
+        // Convert to percentage (assuming 640x640 inference size, but image displayed at different size)
+        // The image is displayed with object-cover, so we use normalized coordinates
+        const imgWidth = 640; // inference input size
+        const imgHeight = 640;
+        
+        regions.push({
+          id: `region-${regionId++}`,
+          label: formatDamageType(detection.damage_type),
+          x: (centerX / imgWidth) * 100,
+          y: (centerY / imgHeight) * 100,
+          width: (width / imgWidth) * 100,
+          height: (height / imgHeight) * 100,
+          confidence: detection.confidence,
+          className: detection.damage_type,
+        });
+      });
+    });
+    
     return regions;
-  }, [assessment, photos]);
+  }, [assessment, views]);
 
   useEffect(() => {
     setMounted(true);
@@ -197,9 +353,9 @@ export function DamageAnnotation({ assessment, photos, onContinue, onAddMorePhot
                   className="w-full h-full object-cover"
                 />
                 
-                {/* Damage region annotations */}
+                {/* Damage region annotations from actual detections */}
                 <AnimatePresence mode="popLayout">
-                  {showAnnotations && damageRegions.map((region, i) => (
+                  {showAnnotations && damageRegions.length > 0 && damageRegions.map((region, i) => (
                     <DamageRegionMarker
                       key={region.id}
                       region={region}
@@ -207,6 +363,16 @@ export function DamageAnnotation({ assessment, photos, onContinue, onAddMorePhot
                     />
                   ))}
                 </AnimatePresence>
+
+                {showAnnotations && damageRegions.length === 0 && (
+                  <motion.div
+                    className="absolute inset-0 flex items-center justify-center bg-black/50"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                  >
+                    <span className="text-electric-400/80 font-mono text-sm">No damage regions detected in primary image</span>
+                  </motion.div>
+                )}
 
                 {/* Scanning line overlay */}
                 <motion.div
@@ -440,91 +606,5 @@ export function DamageAnnotation({ assessment, photos, onContinue, onAddMorePhot
         )}
       </AnimatePresence>
     </div>
-  );
-}
-
-interface DamageRegionMarkerProps {
-  region: { id: string; label: string; x: number; y: number; width: number; height: number; severity: 'high' | 'medium' | 'low' };
-  index: number;
-}
-
-function DamageRegionMarker({ region, index }: DamageRegionMarkerProps) {
-  const severityStyles = {
-    high: { borderColor: 'rgba(239, 68, 68, 0.8)', bgColor: 'rgba(239, 68, 68, 0.15)', labelBg: 'bg-danger-500' },
-    medium: { borderColor: 'rgba(245, 158, 11, 0.8)', bgColor: 'rgba(245, 158, 11, 0.15)', labelBg: 'bg-amber-500' },
-    low: { borderColor: 'rgba(34, 197, 94, 0.8)', bgColor: 'rgba(34, 197, 94, 0.15)', labelBg: 'bg-success-500' },
-  };
-
-  const style = severityStyles[region.severity];
-
-  return (
-    <motion.div
-      className="absolute pointer-events-none"
-      style={{
-        left: `${region.x}%`,
-        top: `${region.y}%`,
-        width: `${region.width}%`,
-        height: `${region.height}%`,
-        transform: 'translate(-50%, -50%)',
-      }}
-      initial={{ scale: 0, opacity: 0 }}
-      animate={{ scale: 1, opacity: 1 }}
-      exit={{ scale: 0, opacity: 0 }}
-      transition={{ duration: 0.4, delay: 0.6 + index * 0.15, ease: [0.34, 1.56, 0.64, 1] }}
-    >
-      {/* Pulsing outline */}
-      <motion.div
-        className="absolute inset-0 rounded-lg border-2"
-        style={{ borderColor: style.borderColor, backgroundColor: style.bgColor }}
-        animate={{
-          boxShadow: [
-            `0 0 0 0 ${style.borderColor}`,
-            `0 0 20px 8px ${style.borderColor.replace('0.8', '0')}`,
-            `0 0 0 0 ${style.borderColor}`,
-          ],
-        }}
-        transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
-      />
-
-      {/* Corner markers */}
-      <div className="absolute inset-0" aria-hidden="true">
-        {['tl', 'tr', 'bl', 'br'].map(pos => (
-          <div
-            key={pos}
-            className="absolute w-3 h-3 border-2"
-            style={{
-              top: pos.includes('t') ? 0 : 'auto',
-              bottom: pos.includes('b') ? 0 : 'auto',
-              left: pos.includes('l') ? 0 : 'auto',
-              right: pos.includes('r') ? 0 : 'auto',
-              borderColor: style.borderColor,
-            }}
-          />
-        ))}
-      </div>
-
-      {/* Label */}
-      <motion.div
-        className="absolute -top-7 left-1/2 -translate-x-1/2 whitespace-nowrap"
-        initial={{ opacity: 0, y: 5 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.8 + index * 0.15 }}
-      >
-        <span className={cn(
-          'px-2 py-1 rounded text-[10px] font-mono font-medium text-background shadow-lg',
-          style.labelBg
-        )}>
-          {region.label}
-        </span>
-        <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-0.5 h-2" style={{ backgroundColor: style.borderColor }} />
-      </motion.div>
-
-      {/* Distance indicators */}
-      <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center pointer-events-none" aria-hidden="true">
-        <div className="text-[9px] font-mono text-electric-400/70 bg-graphite-900/80 px-1.5 py-0.5 rounded">
-          ~{Math.round(region.width * 2.5)}cm
-        </div>
-      </div>
-    </motion.div>
   );
 }

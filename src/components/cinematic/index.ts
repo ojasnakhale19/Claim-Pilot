@@ -4,6 +4,8 @@ export { LightSweep, InspectionLightSweep, StageTransition, PageTransition, Stag
 export { InspectionUpload } from './InspectionUpload';
 export { FourViewUpload } from './FourViewUpload';
 export { FourViewInference } from './FourViewInference';
+export { VideoFourViewInference } from './VideoFourViewInference';
+// export { ICICILombardEligibilityPanel } from './ICICILombardEligibilityPanel'; // TODO: Fix TypeScript issues
 export { DamageAnnotation } from './DamageAnnotation';
 export { FuturisticChat } from './FuturisticChat';
 export { TransitionWrapper, StageIndicator, LoadingOverlay } from './TransitionWrapper';

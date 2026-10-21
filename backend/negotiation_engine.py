@@ -700,33 +700,6 @@ class NegotiationEngine:
             gap=gap
         )
     
-    def _clamp_offer(self, amount: int, ctx: NegotiationContext) -> int:
-        """Ensure offer stays within authority limits."""
-        return max(ctx.min_acceptable, min(ctx.max_authorized, amount))
-    
-    async def make_opening_offer(self, context: NegotiationContext) -> NegotiationMessage:
-        """Generate opening offer at L with explanation."""
-        # Determine amount deterministically
-        amount, reasoning, stage = self._calculate_offer_amount(context, round_num=1)
-        
-        # Use LLM only for message generation
-        prompt = self._build_opening_prompt(context)
-        response = await self.client.complete(SYSTEM_PROMPT, prompt)
-        
-        # Override amount with deterministic value
-        amount = self._clamp_offer(amount, context)
-        
-        msg = NegotiationMessage(
-            round_num=1,
-            role=NegotiationRole.SYSTEM,
-            stage=stage,
-            content=response.get("message", f"Opening offer: ${amount:,}"),
-            amount=amount,
-            reasoning=reasoning,
-            metadata=response.get("metadata", {})
-        )
-        return msg
-    
     async def respond_to_counter(
         self, 
         state: NegotiationState, 
@@ -960,33 +933,6 @@ Generate escalation to human senior adjuster. Preserve conversation and latest o
             reasoning=response.get("reasoning"),
             metadata={"agreed": True}
         )
-    
-    async def make_opening_offer(self, context: NegotiationContext) -> NegotiationMessage:
-        """Generate opening offer at L with explanation."""
-        # Determine amount deterministically
-        amount, reasoning, stage = self._calculate_offer_amount(context, round_num=1)
-        
-        # Use LLM only for message generation
-        prompt = self._build_opening_prompt(context)
-        response = await self.client.complete(SYSTEM_PROMPT, prompt)
-        
-        # Override amount with deterministic value
-        amount = self._clamp_offer(amount, context)
-        
-        msg = NegotiationMessage(
-            round_num=1,
-            role=NegotiationRole.SYSTEM,
-            stage=stage,
-            content=response.get("message", f"Opening offer: ${amount:,}"),
-            amount=amount,
-            reasoning=reasoning,
-            metadata=response.get("metadata", {})
-        )
-        return msg
-    
-    def _clamp_offer(self, amount: int, ctx: NegotiationContext) -> int:
-        """Ensure offer stays within authority limits."""
-        return max(ctx.min_acceptable, min(ctx.max_authorized, amount))
     
     async def run_negotiation(
         self,

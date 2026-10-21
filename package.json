@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "backend:install": "cd backend && python start.py",
     "backend:dev": "cd backend && python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload",
+    "backend:test": "cd backend && python -m pytest tests/ -v",
     "dev:full": "concurrently \"npm run dev\" \"npm run backend:dev\""
   },
   "dependencies": {

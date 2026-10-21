@@ -317,13 +317,12 @@ export class YOLOInference {
 
 /**
  * Create a configured YOLO inference instance for the app
+ * Classes match the backend YOLO11s CarDD model (10 damage classes)
  */
 export function createClaimPilotYOLO(
   modelPath: string = '/best.onnx',
   classNames: string[] = [
-    'dent', 'scratch', 'crack', 'broken', 'paint_damage',
-    'headlight_damage', 'bumper_damage', 'mirror_damage',
-    'door_damage', 'window_damage', 'tire_damage'
+    'crack', 'crash', 'dent', 'dislocated_part', 'glass_shatter', 'lamp_broken', 'no_part', 'rub', 'scratch', 'tire_flat'
   ]
 ): YOLOInference {
   return new YOLOInference({

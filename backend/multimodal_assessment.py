@@ -39,7 +39,7 @@ MIN_PHOTOS_REQUIRED = 3
 MAX_PHOTOS_ALLOWED = 10
 MAX_VIDEO_SIZE_MB = 100
 MAX_PHOTO_SIZE_MB = 15
-VIDEO_FRAME_TARGET = 15  # Number of frames to extract from video
+VIDEO_FRAME_TARGET = 10  # Number of frames to extract from video (exactly 10 for video+4-view workflow)
 
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 SUPPORTED_VIDEO_TYPES = {"video/mp4", "video/quicktime", "video/x-msvideo", "video/webm"}
@@ -50,13 +50,16 @@ _agent: Optional[DecisionAgent] = None
 _video_processor: Optional[VideoProcessor] = None
 
 
-def get_detector() -> CarDamageDetector:
+def get_detector(confidence_threshold: float = 0.25) -> CarDamageDetector:
     global _detector
     if _detector is None:
         if not MODEL_PATH.exists():
             raise RuntimeError(f"Model not found at {MODEL_PATH}")
-        logger.info(f"Loading YOLOv8 model from {MODEL_PATH}")
-        _detector = CarDamageDetector(model_path=str(MODEL_PATH), confidence_threshold=0.25)
+        logger.info(f"Loading YOLO11s model from {MODEL_PATH} with threshold {confidence_threshold}")
+        _detector = CarDamageDetector(model_path=str(MODEL_PATH), confidence_threshold=confidence_threshold)
+    elif _detector.confidence_threshold != confidence_threshold:
+        logger.info(f"Updating detector threshold from {_detector.confidence_threshold} to {confidence_threshold}")
+        _detector.update_confidence_threshold(confidence_threshold)
     return _detector
 
 
@@ -137,9 +140,9 @@ class MultiModalAssessmentResult(BaseModel):
     decision_trace: List[DecisionTrace] = Field(default_factory=list)
     
     # Metadata
-    model_version: str = "yolov8n-cardd-v1"
+    model_version: str = "yolo11s-cardd-v2"
     policy_version: str = "v1.0"
-    cv_backend: str = "yolov8"
+    cv_backend: str = "yolo11s"
     human_review_required: bool = False
     
     # Cost estimation
@@ -379,32 +382,50 @@ def estimate_collective_costs(detections: List[DamageDetection]) -> tuple[int, i
     if not detections:
         return 0, 0, "uncertain", "Unable to determine", "No damage detected"
     
+    # Normalize damage type names
+    def normalize(name: str) -> str:
+        return name.lower().replace(" ", "_").replace("-", "_")
+    
     # Use the same cost estimation logic as the original endpoint
     from collections import Counter
     
-    all_damage_types = [d.damage_type.lower() for d in detections]
+    all_damage_types = [normalize(d.damage_type) for d in detections]
     primary_damage = Counter(all_damage_types).most_common(1)[0][0]
     max_conf = max(d.confidence for d in detections)
     total_count = len(detections)
     
-    # Severity mapping
-    if max_conf >= 0.7 and total_count >= 3:
-        severity = "severe"
-    elif max_conf >= 0.5 and total_count >= 2:
-        severity = "moderate"
-    elif max_conf >= 0.3:
-        severity = "minor"
-    else:
-        severity = "uncertain"
+    # Severity mapping - use area_percentage if available
+    has_area = any(d.area_percentage > 0 for d in detections)
     
-    # Cost map (same as main.py)
+    if has_area:
+        max_area = max(d.area_percentage for d in detections)
+        if max_area >= 15:
+            severity = "severe"
+        elif max_area >= 5:
+            severity = "moderate"
+        elif max_area >= 1:
+            severity = "minor"
+        else:
+            severity = "minor"
+    else:
+        # Fallback to confidence-based
+        if max_conf >= 0.7 and total_count >= 3:
+            severity = "severe"
+        elif max_conf >= 0.5 and total_count >= 2:
+            severity = "moderate"
+        elif max_conf >= 0.3:
+            severity = "minor"
+        else:
+            severity = "uncertain"
+    
+    # Cost map (matching model's 6 classes with underscores)
     DAMAGE_COST_MAP = {
-        "scratch": {"minor": (1500, 3000), "moderate": (3000, 6000), "severe": (6000, 12000)},
         "dent": {"minor": (2000, 4000), "moderate": (4000, 8000), "severe": (8000, 15000)},
+        "scratch": {"minor": (1500, 3000), "moderate": (3000, 6000), "severe": (6000, 12000)},
         "crack": {"minor": (3000, 5000), "moderate": (5000, 10000), "severe": (10000, 20000)},
-        "glass_breakage": {"minor": (8000, 12000), "moderate": (12000, 18000), "severe": (18000, 30000)},
-        "paint_damage": {"minor": (1000, 2500), "moderate": (2500, 5000), "severe": (5000, 10000)},
-        "deformation": {"minor": (3000, 6000), "moderate": (6000, 12000), "severe": (12000, 25000)},
+        "glass_shatter": {"minor": (8000, 12000), "moderate": (12000, 18000), "severe": (18000, 30000)},
+        "lamp_broken": {"minor": (2000, 4000), "moderate": (4000, 8000), "severe": (8000, 15000)},
+        "tire_flat": {"minor": (200, 500), "moderate": (500, 1200), "severe": (1200, 3000)},
         "damage": {"minor": (2000, 4000), "moderate": (4000, 8000), "severe": (8000, 15000)},
     }
     
@@ -416,12 +437,12 @@ def estimate_collective_costs(detections: List[DamageDetection]) -> tuple[int, i
         max_cost = int(max_cost * (1 + 0.3 * (total_count - 1)))
     
     component_map = {
-        "scratch": "Body Panel",
         "dent": "Body Panel",
+        "scratch": "Body Panel",
         "crack": "Bumper/Fender",
-        "glass_breakage": "Windshield/Window",
-        "paint_damage": "Paint Surface",
-        "deformation": "Structural Panel",
+        "glass_shatter": "Windshield/Window",
+        "lamp_broken": "Headlight/Taillight",
+        "tire_flat": "Tire/Wheel",
         "damage": "Vehicle Component",
     }
     primary_component = component_map.get(primary_damage, "Vehicle Component")
@@ -442,7 +463,7 @@ async def health_check():
     
     return MultiModalHealthResponse(
         status="healthy" if (model_ok and agent_ok) else "degraded",
-        version="1.0.0",
+        version="2.0.0",
         model_loaded=model_ok,
         agent_loaded=agent_ok,
         video_processor_ready=True,
@@ -508,7 +529,7 @@ async def assess_multimodal(
         raise HTTPException(status_code=400, detail=f"Video: {video_result['error']}")
     
     # ─── Initialize Components ─────────────────────────────────────────────
-    detector = get_detector()
+    detector = get_detector(confidence_threshold=confidence_threshold)
     agent = get_agent()
     video_processor = get_video_processor()
     

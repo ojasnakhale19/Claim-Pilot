@@ -11,6 +11,7 @@ import {
   X,
   Brain,
   ChevronDown,
+  Video,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -18,13 +19,14 @@ import {
   CSSWheel,
   InspectionUpload,
   FourViewInference,
+  VideoFourViewInference,
   DamageAnnotation,
   FuturisticChat,
   TransitionWrapper,
   StageIndicator,
   LoadingOverlay,
 } from '../components/cinematic';
-import { cn, isValidImageFile, isValidVideoFile, createObjectURL, revokeObjectURL, getFileSizeString, generateId, formatNumber, assessFourView, assessHybrid, type DamageDetection } from '../lib/utils';
+import { cn, isValidImageFile, isValidVideoFile, createObjectURL, revokeObjectURL, getFileSizeString, generateId, formatNumber, assessFourView, assessHybrid, type DamageDetection, type ViewResult, type VideoFourViewAssessmentResponse } from '../lib/utils';
 import { type Detection } from '../lib/yoloInference';
 import { type DamageDetection as PricingDamageDetection, calculateSettlement, type ModelPricing, loadCarPricingData } from '../lib/settlementCalculator';
 import { generateAINegotiationResponse } from '../lib/aiService';
@@ -50,7 +52,9 @@ interface AssessmentData {
   settlementMax: number;
 }
 
-const MOCK_ASSESSMENTS: Record<Severity, AssessmentData> = {
+// Demo assessment data - ONLY used when explicitly in demo mode
+// These are illustrative examples, NOT based on actual image analysis
+const DEMO_ASSESSMENTS: Record<Severity, AssessmentData> = {
   minor: {
     component: 'Front Bumper',
     damageType: 'Surface scratches & minor deformation',
@@ -110,8 +114,8 @@ interface UploadedPhoto {
   type: 'image' | 'video';
 }
 
-type WorkflowStage = 'upload' | 'assessing' | 'assessment' | 'chat' | 'confirmed' | 'humanReview';
-type AssessmentMode = 'demo' | 'ai';
+type WorkflowStage = 'upload' | 'assessing' | 'policy_screening' | 'assessment' | 'chat' | 'confirmed' | 'humanReview';
+type AssessmentMode = 'demo' | 'ai' | 'video-four-view';
 
 interface ChatMessage {
   id: string;
@@ -130,6 +134,7 @@ interface AssessmentResult {
 const workflowStages = [
   { id: 'upload', label: 'UPLOAD', icon: <Camera className="h-4 w-4" /> },
   { id: 'assessing', label: 'SCAN', icon: <Zap className="h-4 w-4" /> },
+  { id: 'policy_screening', label: 'POLICY', icon: <Shield className="h-4 w-4" /> },
   { id: 'assessment', label: 'REPORT', icon: <AlertTriangle className="h-4 w-4" /> },
   { id: 'chat', label: 'NEGOTIATE', icon: <MessageSquare className="h-4 w-4" /> },
   { id: 'confirmed', label: 'DONE', icon: <CheckCircle className="h-4 w-4" /> },
@@ -141,6 +146,7 @@ export function ClaimFlowPage() {
   const [stage, setStage] = useState<WorkflowStage>('upload');
   const [previousStage, setPreviousStage] = useState<WorkflowStage | null>(null);
   const [assessment, setAssessment] = useState<AssessmentResult | null>(null);
+  const [assessmentViews, setAssessmentViews] = useState<Record<string, ViewResult> | null>(null);
   const [assessmentProgress, setAssessmentProgress] = useState(0);
   const [assessmentStep, setAssessmentStep] = useState(0);
 
@@ -211,7 +217,7 @@ export function ClaimFlowPage() {
   }, []);
   
   // Assessment mode
-  const [assessmentMode, setAssessmentMode] = useState<AssessmentMode>('demo');
+  const [assessmentMode, setAssessmentMode] = useState<AssessmentMode>('ai');
   
   // Chat state
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -385,6 +391,16 @@ export function ClaimFlowPage() {
       };
       
       setAssessment({ type: hybridResult.severity, data });
+      // Store views data for DamageAnnotation
+      const viewsData: Record<string, ViewResult> = {};
+      for (const view of REQUIRED_VIEWS) {
+        viewsData[view] = {
+          detection_count: backendResult.views[view].detection_count,
+          detections: backendResult.views[view].detections,
+          annotated_image_base64: backendResult.views[view].annotated_image_base64,
+        };
+      }
+      setAssessmentViews(viewsData);
       setPreviousStage('assessing');
       setStage('assessment');
     } catch (error: any) {
@@ -404,10 +420,89 @@ export function ClaimFlowPage() {
       };
       
       setAssessment({ type: localResult.severity, data });
+      // Store local inference views data - convert to ViewResult format
+      const localViewsData: Record<string, ViewResult> = {};
+      for (const view of REQUIRED_VIEWS) {
+        const viewData = localResult.views[view];
+        if (viewData) {
+          localViewsData[view] = {
+            detection_count: viewData.detections.length,
+            detections: viewData.detections.map(det => ({
+              damage_type: det.className,
+              confidence: det.confidence,
+              bounding_box_xyxy: det.bbox,
+            })),
+            annotated_image_base64: viewData.annotatedImage ?? undefined,
+          };
+        }
+      }
+      setAssessmentViews(localViewsData);
       setPreviousStage('assessing');
       setStage('assessment');
     }
   }, [vehicleInfo]);
+
+  // Video + Four-View Assessment handler (10 video frames + 4 photos = 14 images)
+  const handleVideoFourViewComplete = useCallback(async (backendResult: VideoFourViewAssessmentResponse) => {
+    try {
+      // Build assessment data from backend result
+      const data: AssessmentData = {
+        component: backendResult.primary_component,
+        damageType: backendResult.damage_summary,
+        severity: backendResult.severity,
+        costMin: backendResult.estimated_repair_cost_min,
+        costMax: backendResult.estimated_repair_cost_max,
+        repairApproach: 'Collective AI (Video + 4-View)',
+        explanation: `Collective assessment from ${backendResult.total_detections} detection(s) across 14 images (10 video frames + 4 photos). ${backendResult.damage_summary}. Settlement calculated using local inference.`,
+        settlementOffer: backendResult.settlement_offer,
+        settlementMin: backendResult.settlement_min,
+        settlementMax: backendResult.settlement_max,
+      };
+      
+      setAssessment({ type: backendResult.severity, data });
+      
+      // Convert video frames and photos to ViewResult format for DamageAnnotation
+      const viewsData: Record<string, ViewResult> = {};
+      
+      // Add photo views
+      for (const view of REQUIRED_VIEWS) {
+        const photo = backendResult.photos?.[view];
+        if (photo) {
+          viewsData[view] = {
+            detection_count: photo.detection_count,
+            detections: photo.detections.map(det => ({
+              damage_type: det.damage_type,
+              confidence: det.confidence,
+              bounding_box_xyxy: det.bounding_box_xyxy,
+            })),
+            annotated_image_base64: photo.annotated_image_base64 ?? undefined,
+          };
+        }
+      }
+      
+      // Add video frames as a combined view
+      if (backendResult.video_frames && backendResult.video_frames.length > 0) {
+        const allVideoDetections = backendResult.video_frames.flatMap((f: any) => f.detections || []);
+        viewsData['video'] = {
+          detection_count: allVideoDetections.length,
+          detections: allVideoDetections.map((det: any) => ({
+            damage_type: det.damage_type,
+            confidence: det.confidence,
+            bounding_box_xyxy: det.bounding_box_xyxy,
+          })),
+          annotated_image_base64: undefined,
+        };
+      }
+      
+      setAssessmentViews(viewsData);
+      setPreviousStage('assessing');
+      setStage('assessment');
+    } catch (error: any) {
+      console.error('Video four-view assessment failed:', error);
+      setErrors(prev => ({ ...prev, assessment: error.message || 'Video four-view assessment failed' }));
+      setTimeout(() => setErrors(prev => { const n = {...prev}; delete n.assessment; return n; }), 8000);
+    }
+  }, []);
 
   // Helper to convert file to base64
   const fileToBase64 = (file: File): Promise<string> => {
@@ -486,10 +581,12 @@ export function ClaimFlowPage() {
       };
       
       setAssessment({ type: assessmentType, data });
+      setAssessmentViews(null); // Demo mode has no real detection views
     } else {
       // Fallback to original mock data
-      const result = MOCK_ASSESSMENTS[assessmentType];
+      const result = DEMO_ASSESSMENTS[assessmentType];
       setAssessment({ type: assessmentType, data: result });
+      setAssessmentViews(null); // Demo mode has no real detection views
     }
     
     setPreviousStage('assessing');
@@ -584,6 +681,7 @@ export function ClaimFlowPage() {
     setStage('upload');
     setPreviousStage(null);
     setAssessment(null);
+    setAssessmentViews(null);
     setMessages([]);
     setChatInput('');
     setChatStage('initial');
@@ -606,6 +704,7 @@ export function ClaimFlowPage() {
     setPreviousStage('assessment');
     setStage('upload');
     setAssessment(null);
+    setAssessmentViews(null);
   }, []);
 
   const handleEnterChat = useCallback(() => {
@@ -1008,12 +1107,23 @@ export function ClaimFlowPage() {
                         <Brain className="h-3.5 w-3.5 mr-1" />
                         AI Assessment
                       </Button>
+                      <Button
+                        variant={assessmentMode === 'video-four-view' ? 'default' : 'ghost'}
+                        size="sm"
+                        onClick={() => setAssessmentMode('video-four-view')}
+                        className="rounded-lg"
+                      >
+                        <Video className="h-3.5 w-3.5 mr-1" />
+                        Video + 4-View
+                      </Button>
                     </div>
                   </div>
                   <p className="text-xs text-graphite-500">
                     {assessmentMode === 'demo' 
                       ? 'Demo mode uses simulated assessments based on photo count. No real AI inference.' 
-                      : 'AI mode uses YOLOv11 damage detection on 4 required views (top, bottom, left, right). Requires backend server.'}
+                      : assessmentMode === 'ai'
+                      ? 'AI mode uses YOLOv11 damage detection on 4 required views (top, bottom, left, right). Requires backend server.'
+                      : 'Video + 4-View mode: 1 video (8-10s) + 4 photos (top, bottom, left, right) = 14 images for collective assessment.'}
                   </p>
                 </motion.div>
               </div>
@@ -1053,6 +1163,15 @@ export function ClaimFlowPage() {
                           onFilesChange={(files) => {
                             fourViewFilesRef.current = files;
                           }}
+                          disabled={stage !== 'upload'}
+                        />
+                      );
+                    }
+                    if (assessmentMode === 'video-four-view') {
+                      return (
+                        <VideoFourViewInference
+                          onInferenceComplete={handleVideoFourViewComplete}
+                          onError={handleAIAssessmentError}
                           disabled={stage !== 'upload'}
                         />
                       );
@@ -1142,6 +1261,7 @@ export function ClaimFlowPage() {
                       <DamageAnnotation
                         assessment={assessment}
                         photos={photos}
+                        views={assessmentViews}
                         onContinue={handleEnterChat}
                         onAddMorePhotos={handleAddMorePhotos}
                         onHumanReview={handleHumanReview}

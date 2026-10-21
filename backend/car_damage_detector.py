@@ -15,11 +15,10 @@ logger = logging.getLogger(__name__)
 
 class CarDamageDetector:
     """
-    Car damage detection system using YOLOv8 model trained on CarDD dataset.
+    Car damage detection system using YOLO11s model trained on CarDD dataset (6 classes).
     
-    This class handles the detection and classification of 10 damage types:
-    crack, crash, dent, dislocated_part, glass_shatter, lamp_broken, 
-    no_part, rub, scratch, tire_flat
+    This class handles the detection and classification of 6 damage types:
+    dent, scratch, crack, glass_shatter, lamp_broken, tire_flat
     """
     
     def __init__(self, model_path: Optional[str] = None, confidence_threshold: float = 0.5):
@@ -35,47 +34,35 @@ class CarDamageDetector:
         self.device = self._get_device()
         self.model = None
         self.class_names = {
-            0: "crack",
-            1: "crash",
-            2: "dent",
-            3: "dislocated_part",
-            4: "glass_shatter",
-            5: "lamp_broken",
-            6: "no_part",
-            7: "rub",
-            8: "scratch",
-            9: "tire_flat"
+            0: "dent",
+            1: "scratch",
+            2: "crack",
+            3: "glass_shatter",
+            4: "lamp_broken",
+            5: "tire_flat"
         }
         
-        # Damage severity mapping based on area and type (CarDD 10 classes)
+        # Damage severity mapping based on area and type (CarDD 6 classes)
         # Auto-load model on init
         self._load_model()
 
         self.severity_mapping = {
-            "scratch": {"light": (0, 5), "moderate": (5, 15), "severe": (15, 100)},
             "dent": {"light": (0, 3), "moderate": (3, 10), "severe": (10, 100)},
+            "scratch": {"light": (0, 5), "moderate": (5, 15), "severe": (15, 100)},
             "crack": {"light": (0, 2), "moderate": (2, 8), "severe": (8, 100)},
-            "crash": {"light": (0, 3), "moderate": (3, 10), "severe": (10, 100)},
             "glass_shatter": {"light": (0, 1), "moderate": (1, 5), "severe": (5, 100)},
             "lamp_broken": {"light": (0, 1), "moderate": (1, 3), "severe": (3, 100)},
-            "dislocated_part": {"light": (0, 2), "moderate": (2, 6), "severe": (6, 100)},
-            "rub": {"light": (0, 3), "moderate": (3, 10), "severe": (10, 100)},
             "tire_flat": {"light": (0, 1), "moderate": (1, 3), "severe": (3, 100)},
-            "no_part": {"light": (0, 2), "moderate": (2, 5), "severe": (5, 100)},
         }
         
         # Cost estimation per damage type (base costs in USD)
         self.cost_estimates = {
-            "scratch": {"light": 150, "moderate": 400, "severe": 1000},
             "dent": {"light": 300, "moderate": 800, "severe": 2000},
+            "scratch": {"light": 150, "moderate": 400, "severe": 1000},
             "crack": {"light": 500, "moderate": 1200, "severe": 3000},
-            "crash": {"light": 1000, "moderate": 3000, "severe": 8000},
             "glass_shatter": {"light": 400, "moderate": 1000, "severe": 2500},
             "lamp_broken": {"light": 200, "moderate": 500, "severe": 1200},
-            "dislocated_part": {"light": 500, "moderate": 1500, "severe": 4000},
-            "rub": {"light": 100, "moderate": 300, "severe": 800},
             "tire_flat": {"light": 150, "moderate": 400, "severe": 1000},
-            "no_part": {"light": 300, "moderate": 800, "severe": 2000},
         }
     
     def _get_device(self) -> str:
@@ -263,7 +250,7 @@ class CarDamageDetector:
                 "total_estimated_cost": sum([d["estimated_cost"] for d in detections]),
                 "highest_severity": self._get_highest_severity(detections),
                 "processing_info": {
-                    "model_used": "YOLOv8",
+                    "model_used": "YOLO11s",
                     "device": self.device,
                     "confidence_threshold": self.confidence_threshold
                 }
@@ -347,18 +334,14 @@ class CarDamageDetector:
         img_array = self._preprocess_image(image)
         annotated_img = img_array.copy()
         
-        # Color mapping for CarDD damage types
+        # Color mapping for CarDD damage types (6 classes)
         colors = {
-            "scratch": (0, 255, 0),        # Green
             "dent": (255, 165, 0),         # Orange
+            "scratch": (0, 255, 0),        # Green
             "crack": (255, 0, 255),        # Magenta
-            "crash": (255, 0, 0),          # Red
             "glass_shatter": (0, 255, 255), # Cyan
             "lamp_broken": (255, 255, 0),  # Yellow
-            "dislocated_part": (128, 0, 128), # Purple
-            "rub": (0, 128, 255),          # Light Blue
             "tire_flat": (128, 128, 0),    # Olive
-            "no_part": (255, 128, 0),      # Orange-Red
         }
         
         for detection in detections:

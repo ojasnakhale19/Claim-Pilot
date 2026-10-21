@@ -8,6 +8,7 @@ import json
 import os
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import cv2
@@ -28,6 +29,13 @@ from multimodal_assessment import router as multimodal_assessment_router
 # ─── New: Negotiation Engine Router ───────────────────────────────────────────
 from negotiation_engine import create_negotiation_router
 
+# ─── New: Idogur10 Damage Assessment Router ───────────────────────────────────
+from idogur10_integration import router as idogur10_router
+from video_processor import create_video_processor
+
+# ─── New: ICICI Lombard Policy Screening Router ───────────────────────────────
+from icici_lombard_screening import router as icici_lombard_router
+
 # ─── Constants ──────────────────────────────────────────────────────────────
 REQUIRED_VIEWS = ("top", "bottom", "left", "right")
 SUPPORTED_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
@@ -42,22 +50,28 @@ _model_label: str = ""
 
 
 def load_damage_model() -> tuple[YOLO, str]:
-    """Load the YOLO damage detection model."""
+    """Load the YOLO damage detection model (local YOLO11s CarDD model)."""
     global _model, _model_label
     if _model is not None:
         return _model, _model_label
 
-    from huggingface_hub import hf_hub_download
-
+    # Use local model by default
     local_path = os.getenv("AUTOSETTLE_MODEL_PATH", "").strip()
     if local_path:
         if not os.path.isfile(local_path):
             raise FileNotFoundError(f"AUTOSETTLE_MODEL_PATH does not exist: {local_path}")
         weights_path = local_path
     else:
-        repo_id = os.getenv("AUTOSETTLE_HF_REPO", "shanexf/car-damage-yolo11m-ft")
-        filename = os.getenv("AUTOSETTLE_HF_FILENAME", "damage_best.pt")
-        weights_path = hf_hub_download(repo_id=repo_id, filename=filename)
+        # Default to local cardd_yolo11s_v2 model
+        default_model_path = Path(__file__).parent / "models" / "best.pt"
+        if default_model_path.exists():
+            weights_path = str(default_model_path)
+        else:
+            # Fallback to HF if local model not found
+            from huggingface_hub import hf_hub_download
+            repo_id = os.getenv("AUTOSETTLE_HF_REPO", "shanexf/car-damage-yolo11m-ft")
+            filename = os.getenv("AUTOSETTLE_HF_FILENAME", "damage_best.pt")
+            weights_path = hf_hub_download(repo_id=repo_id, filename=filename)
 
     _model = YOLO(weights_path)
     _model_label = os.path.basename(weights_path)
@@ -339,14 +353,19 @@ class AssessmentResponse(BaseModel):
 
 # ─── Cost Estimation (Demo Logic) ───────────────────────────────────────────
 DAMAGE_COST_MAP = {
-    "scratch": {"minor": (1500, 3000), "moderate": (3000, 6000), "severe": (6000, 12000)},
     "dent": {"minor": (2000, 4000), "moderate": (4000, 8000), "severe": (8000, 15000)},
+    "scratch": {"minor": (1500, 3000), "moderate": (3000, 6000), "severe": (6000, 12000)},
     "crack": {"minor": (3000, 5000), "moderate": (5000, 10000), "severe": (10000, 20000)},
-    "glass_breakage": {"minor": (8000, 12000), "moderate": (12000, 18000), "severe": (18000, 30000)},
-    "paint_damage": {"minor": (1000, 2500), "moderate": (2500, 5000), "severe": (5000, 10000)},
-    "deformation": {"minor": (3000, 6000), "moderate": (6000, 12000), "severe": (12000, 25000)},
+    "glass_shatter": {"minor": (8000, 12000), "moderate": (12000, 18000), "severe": (18000, 30000)},
+    "lamp_broken": {"minor": (2000, 4000), "moderate": (4000, 8000), "severe": (8000, 15000)},
+    "tire_flat": {"minor": (200, 500), "moderate": (500, 1200), "severe": (1200, 3000)},
     "damage": {"minor": (2000, 4000), "moderate": (4000, 8000), "severe": (8000, 15000)},
 }
+
+
+def normalize_damage_type(name: str) -> str:
+    """Normalize damage type name to match cost map keys (use underscores)."""
+    return name.lower().replace(" ", "_").replace("-", "_")
 
 
 def estimate_costs(detections_by_view: Dict[str, Any]) -> tuple[int, int, str, str, str]:
@@ -358,24 +377,44 @@ def estimate_costs(detections_by_view: Dict[str, Any]) -> tuple[int, int, str, s
     if not all_detections:
         return 0, 0, "uncertain", "Unable to determine", "No supported damage classes detected in the submitted images."
 
+    # Normalize damage types (model returns "glass shatter" -> "glass_shatter")
+    for d in all_detections:
+        d["damage_type"] = normalize_damage_type(d["damage_type"])
+
     # Determine severity based on highest confidence detection and count
     max_conf = max(d["confidence"] for d in all_detections)
     total_count = len(all_detections)
 
     # Get most common damage type
     from collections import Counter
-    damage_types = [d["damage_type"].lower() for d in all_detections]
+    damage_types = [d["damage_type"] for d in all_detections]
     primary_damage = Counter(damage_types).most_common(1)[0][0]
 
-    # Map to severity
-    if max_conf >= 0.7 and total_count >= 3:
-        severity = "severe"
-    elif max_conf >= 0.5 and total_count >= 2:
-        severity = "moderate"
-    elif max_conf >= 0.3:
-        severity = "minor"
+    # Map to severity - use area percentage if available, otherwise confidence
+    # Check if any detection has area_percentage (from CarDamageDetector)
+    has_area = any("area_percentage" in d for d in all_detections)
+    
+    if has_area:
+        # Use max area percentage for severity
+        max_area = max(d.get("area_percentage", 0) for d in all_detections)
+        if max_area >= 15:
+            severity = "severe"
+        elif max_area >= 5:
+            severity = "moderate"
+        elif max_area >= 1:
+            severity = "minor"
+        else:
+            severity = "minor"
     else:
-        severity = "uncertain"
+        # Fallback to confidence-based
+        if max_conf >= 0.7 and total_count >= 3:
+            severity = "severe"
+        elif max_conf >= 0.5 and total_count >= 2:
+            severity = "moderate"
+        elif max_conf >= 0.3:
+            severity = "minor"
+        else:
+            severity = "uncertain"
 
     # Estimate cost
     cost_map = DAMAGE_COST_MAP.get(primary_damage, DAMAGE_COST_MAP["damage"])
@@ -388,12 +427,12 @@ def estimate_costs(detections_by_view: Dict[str, Any]) -> tuple[int, int, str, s
 
     # Component mapping
     component_map = {
-        "scratch": "Body Panel",
         "dent": "Body Panel",
+        "scratch": "Body Panel",
         "crack": "Bumper/Fender",
-        "glass_breakage": "Windshield/Window",
-        "paint_damage": "Paint Surface",
-        "deformation": "Structural Panel",
+        "glass_shatter": "Windshield/Window",
+        "lamp_broken": "Headlight/Taillight",
+        "tire_flat": "Tire/Wheel",
         "damage": "Vehicle Component",
     }
     primary_component = component_map.get(primary_damage, "Vehicle Component")
@@ -616,6 +655,12 @@ app.include_router(multimodal_assessment_router)
 
 # ─── Include Negotiation Router ───────────────────────────────────────────────
 app.include_router(create_negotiation_router())
+
+# ─── Include Idogur10 Damage Assessment Router ──────────────────────────────────
+app.include_router(idogur10_router)
+
+# ─── Include ICICI Lombard Screening Router ────────────────────────────────────
+app.include_router(icici_lombard_router)
 
 
 @app.get("/health")
@@ -846,10 +891,17 @@ async def assess_general(
     # Estimate overall costs
     if all_detections:
         from collections import Counter
-        damage_counter = Counter(d["damage_type"].lower() for d in all_detections)
+        # Normalize damage types (model returns "glass shatter" -> "glass_shatter")
+        normalized_detections = []
+        for d in all_detections:
+            normalized_detections.append({
+                "damage_type": normalize_damage_type(d["damage_type"]),
+                "confidence": d["confidence"]
+            })
+        damage_counter = Counter(d["damage_type"] for d in normalized_detections)
         primary_damage = damage_counter.most_common(1)[0][0]
-        max_conf = max(d["confidence"] for d in all_detections)
-        total_count = len(all_detections)
+        max_conf = max(d["confidence"] for d in normalized_detections)
+        total_count = len(normalized_detections)
 
         if max_conf >= 0.7 and total_count >= 3:
             severity = "severe"
@@ -870,16 +922,16 @@ async def assess_general(
         total_cost_max = max_cost
 
         component_map = {
-            "scratch": "Body Panel",
             "dent": "Body Panel",
+            "scratch": "Body Panel",
             "crack": "Bumper/Fender",
-            "glass_breakage": "Windshield/Window",
-            "paint_damage": "Paint Surface",
-            "deformation": "Structural Panel",
+            "glass_shatter": "Windshield/Window",
+            "lamp_broken": "Headlight/Taillight",
+            "tire_flat": "Tire/Wheel",
             "damage": "Vehicle Component",
         }
         primary_component = component_map.get(primary_damage, "Vehicle Component")
-        unique_types = list(set(all_damage_types))
+        unique_types = list(set(d["damage_type"] for d in normalized_detections))
         summary = f"Analyzed {len(files)} image(s). Detected {total_count} damage instance(s): {', '.join(unique_types)}. Primary: {primary_damage} ({severity})."
     else:
         severity = "uncertain"
@@ -1016,7 +1068,7 @@ async def assess_hybrid(request: HybridAssessmentRequest):
     all_ai_detections = []
     for item in ai_result.get("damageItems", []):
         all_ai_detections.append({
-            "damage_type": item["damageType"],
+            "damage_type": normalize_damage_type(item["damageType"]),
             "confidence": item.get("confidence", 0.5),
         })
     
@@ -1024,7 +1076,7 @@ async def assess_hybrid(request: HybridAssessmentRequest):
     if all_ai_detections:
         max_conf = max(d["confidence"] for d in all_ai_detections)
         total_count = len(all_ai_detections)
-        damage_types = [d["damage_type"].lower() for d in all_ai_detections]
+        damage_types = [d["damage_type"] for d in all_ai_detections]
         from collections import Counter
         primary_damage = Counter(damage_types).most_common(1)[0][0] if damage_types else "damage"
         
@@ -1049,16 +1101,16 @@ async def assess_hybrid(request: HybridAssessmentRequest):
         primary_damage = "damage"
     
     component_map = {
-        "scratch": "Body Panel",
         "dent": "Body Panel",
+        "scratch": "Body Panel",
         "crack": "Bumper/Fender",
-        "glass_breakage": "Windshield/Window",
-        "paint_damage": "Paint Surface",
-        "deformation": "Structural Panel",
+        "glass_shatter": "Windshield/Window",
+        "lamp_broken": "Headlight/Taillight",
+        "tire_flat": "Tire/Wheel",
         "damage": "Vehicle Component",
     }
     primary_component = component_map.get(primary_damage, "Vehicle Component")
-    unique_types = list(set([d["damage_type"].lower() for d in all_ai_detections]))
+    unique_types = list(set([d["damage_type"] for d in all_ai_detections]))
     summary = f"Hybrid AI: {len(all_ai_detections)} damage instance(s): {', '.join(unique_types)}. Primary: {primary_damage} ({severity})."
     
     settlement_offer = int((min_cost + max_cost) / 2 * 0.7) if min_cost > 0 else 0
@@ -1089,6 +1141,314 @@ async def assess_hybrid(request: HybridAssessmentRequest):
         primary_component=primary_component,
         damage_summary=summary,
         review_required=review_required,
+    )
+
+
+# ─── Video + Four-View Assessment Endpoint (10 video frames + 4 photos = 14 images) ──────────────
+VIDEO_FRAME_TARGET = 10
+MIN_VIDEO_DURATION = 8.0
+MAX_VIDEO_DURATION = 10.0
+MAX_VIDEO_SIZE_MB = 100
+MAX_PHOTO_SIZE_MB = 15
+SUPPORTED_VIDEO_TYPES = {"video/mp4", "video/quicktime", "video/x-msvideo", "video/webm"}
+
+
+class VideoFourViewAssessmentResponse(BaseModel):
+    assessment_id: str
+    timestamp: str
+    processing_time_ms: int
+    
+    # Input summary
+    video_processed: bool
+    video_frames_extracted: int
+    video_duration_seconds: float
+    photos_processed: int
+    
+    # Detection results
+    video_frames: List[dict] = Field(default_factory=list)
+    photos: Dict[str, dict] = Field(default_factory=dict)
+    all_detections: List[dict] = Field(default_factory=list)
+    total_detections: int
+    
+    # Collective assessment
+    severity: str
+    primary_component: str
+    damage_summary: str
+    estimated_repair_cost_min: int
+    estimated_repair_cost_max: int
+    settlement_offer: int
+    settlement_min: int
+    settlement_max: int
+    
+    # Metadata
+    model_version: str = "yolo11s-cardd-v2"
+    cv_backend: str = "yolo11s"
+    limitations: List[str] = Field(default_factory=list)
+
+
+@app.post("/assess/video-four-view", response_model=VideoFourViewAssessmentResponse)
+async def assess_video_four_view(
+    video: UploadFile = File(..., description="Video walkaround (8-10 seconds)"),
+    top: UploadFile = File(..., description="Top view photo"),
+    bottom: UploadFile = File(..., description="Bottom view photo"),
+    left: UploadFile = File(..., description="Left side photo"),
+    right: UploadFile = File(..., description="Right side photo"),
+    confidence_threshold: float = Form(default=0.25),
+    image_size: int = Form(default=640),
+):
+    """
+    Video + Four-View Damage Assessment
+    
+    Accepts exactly 5 inputs:
+    - 1 video (8-10 seconds walkaround)
+    - 4 photos (top, bottom, left, right views of the same damaged area)
+    
+    Process:
+    1. Validate video duration (8-10 seconds) and extract exactly 10 frames
+    2. Validate 4 required photos (top, bottom, left, right)
+    3. Run YOLO inference on all 14 images (10 video frames + 4 photos)
+    4. Aggregate detections across all evidence
+    5. Return collective assessment with cost estimates
+    """
+    import time
+    start_time = time.time()
+    assessment_id = f"VF4V-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
+    
+    # ─── Validate Video ───────────────────────────────────────────────────────
+    if not video.filename:
+        raise HTTPException(status_code=400, detail="Video: No file provided")
+    
+    if video.content_type not in SUPPORTED_VIDEO_TYPES:
+        raise HTTPException(status_code=400, detail=f"Video: Unsupported format. Use MP4, MOV, AVI, or WebM.")
+    
+    video_content = await video.read()
+    if len(video_content) > MAX_VIDEO_SIZE_MB * 1024 * 1024:
+        raise HTTPException(status_code=400, detail=f"Video too large (max {MAX_VIDEO_SIZE_MB}MB)")
+    if len(video_content) < 1000:
+        raise HTTPException(status_code=400, detail="Video file too small or empty")
+    
+    # ─── Validate Photos ──────────────────────────────────────────────────────
+    photo_files = {"top": top, "bottom": bottom, "left": left, "right": right}
+    photo_contents = {}
+    
+    for view, upload_file in photo_files.items():
+        if not upload_file.filename:
+            raise HTTPException(status_code=400, detail=f"{view}: No file provided")
+        
+        ext = upload_file.filename.split(".")[-1].lower()
+        if ext not in SUPPORTED_EXTENSIONS:
+            raise HTTPException(status_code=400, detail=f"{view}: Unsupported file format. Use JPG, PNG, or WebP.")
+        
+        content = await upload_file.read()
+        if len(content) > MAX_PHOTO_SIZE_MB * 1024 * 1024:
+            raise HTTPException(status_code=400, detail=f"{view}: File too large (max {MAX_PHOTO_SIZE_MB}MB)")
+        
+        photo_contents[view] = content
+    
+    # ─── Initialize Components ────────────────────────────────────────────────
+    try:
+        model, model_label = load_damage_model()
+        video_processor = create_video_processor(max_frames=VIDEO_FRAME_TARGET)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Initialization failed: {type(exc).__name__}: {exc}")
+    
+    # ─── Process Video: Extract 10 Frames ─────────────────────────────────────
+    video_frames = []
+    video_detections = []
+    video_processed = False
+    video_duration = 0.0
+    video_warnings = []
+    
+    try:
+        extraction_result = video_processor.extract_frames(
+            video_content,
+            video.filename,
+            strategy="uniform",
+            target_frames=VIDEO_FRAME_TARGET
+        )
+        
+        video_duration = extraction_result.duration_seconds
+        video_processed = True
+        video_warnings = extraction_result.warnings
+        
+        # Run inference on each extracted frame
+        for frame in extraction_result.extracted_frames:
+            result = model.predict(source=frame.image, conf=confidence_threshold, imgsz=image_size, verbose=False)[0]
+            
+            frame_detections = []
+            boxes = getattr(result, "boxes", None)
+            if boxes is not None:
+                for box in boxes:
+                    class_id = int(box.cls.item())
+                    score = float(box.conf.item())
+                    names = result.names
+                    if isinstance(names, dict):
+                        class_name = str(names.get(class_id, class_id))
+                    else:
+                        class_name = str(names[class_id]) if 0 <= class_id < len(names) else str(class_id)
+                    xyxy = [round(float(v), 1) for v in box.xyxy[0].tolist()]
+                    
+                    frame_detections.append({
+                        "damage_type": class_name,
+                        "confidence": round(score, 4),
+                        "bounding_box_xyxy": xyxy,
+                    })
+            
+            video_frames.append({
+                "frame_index": frame.frame_index,
+                "timestamp_ms": frame.timestamp_ms,
+                "detection_count": len(frame_detections),
+                "detections": frame_detections,
+            })
+            video_detections.extend(frame_detections)
+        
+    except Exception as e:
+        # Video processing failed - continue with photos only
+        video_warnings.append(f"Video processing failed: {str(e)}")
+    
+    # ─── Process Photos ───────────────────────────────────────────────────────
+    photo_results = {}
+    photo_detections = []
+    
+    for view, content in photo_contents.items():
+        try:
+            image = decode_image(content)
+            result = model.predict(source=image, conf=confidence_threshold, imgsz=image_size, verbose=False)[0]
+            
+            detections = []
+            boxes = getattr(result, "boxes", None)
+            if boxes is not None:
+                for box in boxes:
+                    class_id = int(box.cls.item())
+                    score = float(box.conf.item())
+                    names = result.names
+                    if isinstance(names, dict):
+                        class_name = str(names.get(class_id, class_id))
+                    else:
+                        class_name = str(names[class_id]) if 0 <= class_id < len(names) else str(class_id)
+                    xyxy = [round(float(v), 1) for v in box.xyxy[0].tolist()]
+                    
+                    detections.append({
+                        "damage_type": class_name,
+                        "confidence": round(score, 4),
+                        "bounding_box_xyxy": xyxy,
+                    })
+            
+            # Annotated image
+            plotted = result.plot()
+            annotated_rgb = np.ascontiguousarray(plotted[:, :, ::-1])
+            pil_img = Image.fromarray(annotated_rgb)
+            buffered = io.BytesIO()
+            pil_img.save(buffered, format="JPEG", quality=85)
+            annotated_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+            
+            photo_results[view] = {
+                "detection_count": len(detections),
+                "detections": detections,
+                "annotated_image_base64": annotated_b64,
+            }
+            photo_detections.extend(detections)
+            
+        except Exception as e:
+            photo_results[view] = {
+                "detection_count": 0,
+                "detections": [],
+                "error": str(e),
+            }
+    
+    # ─── Aggregate All Detections ─────────────────────────────────────────────
+    all_detections = video_detections + photo_detections
+    total_detections = len(all_detections)
+    
+    # ─── Estimate Costs (reuse existing logic) ───────────────────────────────
+    # Normalize damage types
+    normalized_detections = []
+    for d in all_detections:
+        normalized_detections.append({
+            "damage_type": normalize_damage_type(d["damage_type"]),
+            "confidence": d["confidence"]
+        })
+    
+    if normalized_detections:
+        from collections import Counter
+        damage_counter = Counter(d["damage_type"] for d in normalized_detections)
+        primary_damage = damage_counter.most_common(1)[0][0]
+        max_conf = max(d["confidence"] for d in normalized_detections)
+        total_count = len(normalized_detections)
+        
+        # Severity based on confidence
+        if max_conf >= 0.7 and total_count >= 3:
+            severity = "severe"
+        elif max_conf >= 0.5 and total_count >= 2:
+            severity = "moderate"
+        elif max_conf >= 0.3:
+            severity = "minor"
+        else:
+            severity = "uncertain"
+        
+        cost_map = DAMAGE_COST_MAP.get(primary_damage, DAMAGE_COST_MAP["damage"])
+        min_cost, max_cost = cost_map.get(severity, cost_map["minor"])
+        if total_count > 1:
+            min_cost = int(min_cost * (1 + 0.3 * (total_count - 1)))
+            max_cost = int(max_cost * (1 + 0.3 * (total_count - 1)))
+        
+        component_map = {
+            "dent": "Body Panel",
+            "scratch": "Body Panel",
+            "crack": "Bumper/Fender",
+            "glass_shatter": "Windshield/Window",
+            "lamp_broken": "Headlight/Taillight",
+            "tire_flat": "Tire/Wheel",
+            "damage": "Vehicle Component",
+        }
+        primary_component = component_map.get(primary_damage, "Vehicle Component")
+        unique_types = list(set(d["damage_type"] for d in normalized_detections))
+        summary = f"Video+4-View: {total_count} detections from 14 images. Types: {', '.join(unique_types)}. Primary: {primary_damage} ({severity})."
+    else:
+        severity = "uncertain"
+        min_cost = 0
+        max_cost = 0
+        primary_component = "Unable to determine"
+        summary = "No supported damage classes detected in any of the 14 images."
+    
+    settlement_offer = int((min_cost + max_cost) / 2 * 0.7) if min_cost > 0 else 0
+    settlement_min = int(min_cost * 0.55) if min_cost > 0 else 0
+    settlement_max = int(max_cost * 0.85) if max_cost > 0 else 0
+    
+    # ─── Build Response ──────────────────────────────────────────────────────
+    processing_time = int((time.time() - start_time) * 1000)
+    
+    return VideoFourViewAssessmentResponse(
+        assessment_id=assessment_id,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        processing_time_ms=processing_time,
+        
+        video_processed=video_processed,
+        video_frames_extracted=len(video_frames),
+        video_duration_seconds=video_duration,
+        photos_processed=len(photo_results),
+        
+        video_frames=video_frames,
+        photos=photo_results,
+        all_detections=all_detections,
+        total_detections=total_detections,
+        
+        severity=severity,
+        primary_component=primary_component,
+        damage_summary=summary,
+        estimated_repair_cost_min=min_cost,
+        estimated_repair_cost_max=max_cost,
+        settlement_offer=settlement_offer,
+        settlement_min=settlement_min,
+        settlement_max=settlement_max,
+        
+        limitations=[
+            "Video must be 8-10 seconds for optimal 10-frame extraction",
+            "Same physical damage may appear in multiple video frames and photos",
+            "Damage class and detector confidence are not validated measures of severity or repair cost",
+            "Viewpoint labels are user-supplied, not independently verified",
+            "This output is an evidence summary only and does not authorize an insurance settlement",
+        ],
     )
 
 

@@ -102,10 +102,14 @@ class VideoProcessor:
             if frame_count == 0:
                 return False, "Video has no frames."
             
-            if duration < 1.0:
-                return False, "Video too short (minimum 1 second)."
+            # For 10-frame extraction workflow: require 8-10 seconds
+            if duration < 8.0:
+                return False, f"Video too short: {duration:.1f}s (minimum 8 seconds for 10-frame extraction)."
             
-            if duration > 300:  # 5 minutes
+            if duration > 10.0:
+                return False, f"Video too long: {duration:.1f}s (maximum 10 seconds for 10-frame extraction)."
+            
+            if duration > 300:  # 5 minutes absolute max
                 return False, "Video too long (maximum 5 minutes)."
             
             return True, ""
@@ -359,7 +363,7 @@ class VideoProcessor:
 
 
 def create_video_processor(
-    max_frames: int = 20,
+    max_frames: int = 10,
     min_interval_seconds: float = 0.5,
     max_video_size_mb: int = 100
 ) -> VideoProcessor:

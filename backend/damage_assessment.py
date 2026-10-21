@@ -37,14 +37,17 @@ _detector: Optional[CarDamageDetector] = None
 _agent: Optional[DecisionAgent] = None
 
 
-def get_detector() -> CarDamageDetector:
+def get_detector(confidence_threshold: float = 0.25) -> CarDamageDetector:
     """Get or create the CarDamageDetector instance."""
     global _detector
     if _detector is None:
         if not MODEL_PATH.exists():
             raise RuntimeError(f"Model not found at {MODEL_PATH}. Ensure best.pt is in models/")
-        logger.info(f"Loading YOLOv8 model from {MODEL_PATH}")
-        _detector = CarDamageDetector(model_path=str(MODEL_PATH), confidence_threshold=0.25)
+        logger.info(f"Loading YOLOv8 model from {MODEL_PATH} with threshold {confidence_threshold}")
+        _detector = CarDamageDetector(model_path=str(MODEL_PATH), confidence_threshold=confidence_threshold)
+    elif _detector.confidence_threshold != confidence_threshold:
+        logger.info(f"Updating detector threshold from {_detector.confidence_threshold} to {confidence_threshold}")
+        _detector.update_confidence_threshold(confidence_threshold)
     return _detector
 
 
@@ -94,9 +97,9 @@ class AssessmentResult(BaseModel):
     decision_trace: list[DecisionTrace] = Field(default_factory=list)
 
     # Metadata
-    model_version: str = Field("yolov8n-cardd-v1", description="CV model version used")
+    model_version: str = Field("yolo11s-cardd-v2", description="CV model version used")
     policy_version: str = Field("v1.0", description="Policy version applied")
-    cv_backend: str = Field("yolov8", description="CV backend: yolov8")
+    cv_backend: str = Field("yolo11s", description="CV backend: yolo11s")
     human_review_required: bool = Field(False)
 
 
@@ -124,7 +127,7 @@ async def health_check():
     
     return HealthResponse(
         status="healthy" if (model_ok and agent_ok) else "degraded",
-        version="1.0.0",
+        version="2.0.0",
         model_loaded=model_ok,
         agent_loaded=agent_ok,
         model_path=str(MODEL_PATH),
@@ -136,6 +139,7 @@ async def health_check():
 @router.post("", response_model=AssessmentResult)
 async def assess_damage(
     image: UploadFile = File(..., description="Vehicle image (JPEG/PNG/WebP)"),
+    confidence_threshold: float = 0.25,
 ):
     """
     Main assessment endpoint.
@@ -163,12 +167,14 @@ async def assess_damage(
         raise HTTPException(status_code=400, detail="Image file exceeds 20MB limit.")
 
     logger.info(f"[{assessment_id}] Processing image: {image.filename} ({len(image_bytes)} bytes)")
+    logger.info(f"[{assessment_id}] Using confidence_threshold: {confidence_threshold}")
 
     # Step 1: Damage detection (real model only — no demo fallback)
     try:
         from PIL import Image as PILImage
         import io
-        detector = get_detector()
+        detector = get_detector(confidence_threshold=confidence_threshold)
+        logger.info(f"[{assessment_id}] Detector threshold after get_detector: {detector.confidence_threshold}")
         pil_img = PILImage.open(io.BytesIO(image_bytes))
         result = detector.detect_damage(pil_img)
         raw_detections_raw = result.get('damages', result.get('detections', []))
@@ -185,7 +191,7 @@ async def assess_damage(
                 'area_percentage': det.get('area_percentage', 0),
                 'estimated_cost': det.get('estimated_cost', 0),
             })
-        cv_backend = "yolov8"
+        cv_backend = "yolo11s"
     except Exception as e:
         logger.error(f"[{assessment_id}] CV detection failed: {e}")
         raise HTTPException(status_code=500, detail=f"Damage detection failed: {type(e).__name__}: {e}")

@@ -92,6 +92,21 @@ export function isValidVideoFile(file: File): boolean {
   return validTypes.includes(file.type) && file.size <= 50 * 1024 * 1024;
 }
 
+export function formatDamageType(className: string): string {
+  const labels: Record<string, string> = {
+    dent: 'Dent',
+    scratch: 'Scratch',
+    crack: 'Crack',
+    'glass shatter': 'Glass Shatter',
+    glass_shatter: 'Glass Shatter',
+    'lamp broken': 'Lamp Broken',
+    lamp_broken: 'Lamp Broken',
+    'tire flat': 'Tire Flat',
+    tire_flat: 'Tire Flat',
+  };
+  return labels[className.toLowerCase()] || className.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
 export function createObjectURL(file: File): string {
   return URL.createObjectURL(file);
 }
@@ -236,6 +251,145 @@ export interface HealthCheck {
   service: string;
 }
 
+// ─── Policy-Driven Assessment (New /assess/ endpoint) ─────────────────────────
+export interface PolicyDamageDetection {
+  damage_type: string;
+  confidence: number;
+  severity: 'minor' | 'moderate' | 'severe';
+  location: string;
+  bbox: number[];
+  area_percentage: number;
+  estimated_cost: number;
+}
+
+export interface PolicyDecisionTrace {
+  rule_applied: string;
+  threshold: string;
+  evidence: string;
+}
+
+export interface PolicyAssessmentResult {
+  assessment_id: string;
+  timestamp: string;
+  processing_time_ms: number;
+  damages_detected: PolicyDamageDetection[];
+  total_damages: number;
+  decision: 'AUTO_APPROVE' | 'HUMAN_REVIEW' | 'ESCALATE';
+  decision_confidence: number;
+  decision_trace: PolicyDecisionTrace[];
+  model_version: string;
+  policy_version: string;
+  cv_backend: string;
+  human_review_required: boolean;
+}
+
+export interface PolicyHealthResponse {
+  status: string;
+  version: string;
+  model_loaded: boolean;
+  agent_loaded: boolean;
+  model_path: string;
+  policies_dir: string;
+  uptime_seconds: number;
+}
+
+export interface PolicyConfigResponse {
+  policy_version: string;
+  policy_files: Record<string, string>;
+  decision_types: string[];
+  severity_levels: string[];
+  rules_summary: Record<string, string>;
+}
+
+// ─── Transform Functions ──────────────────────────────────────────────────────
+/**
+ * Convert backend PolicyDamageDetection to frontend DamageDetection
+ */
+export function transformPolicyDetection(det: PolicyDamageDetection): DamageDetection {
+  return {
+    damage_type: det.damage_type,
+    confidence: det.confidence,
+    bounding_box_xyxy: det.bbox,
+  };
+}
+
+/**
+ * Convert backend PolicyAssessmentResult to frontend AssessmentResponse format
+ */
+export function transformPolicyAssessment(result: PolicyAssessmentResult): AssessmentResponse {
+  const views: Record<string, ViewResult> = {};
+  
+  // Group detections by location/view (approximate since single image)
+  const byLocation = result.damages_detected.reduce((acc, det) => {
+    const loc = det.location || 'unknown';
+    if (!acc[loc]) acc[loc] = [];
+    acc[loc].push(transformPolicyDetection(det));
+    return acc;
+  }, {} as Record<string, DamageDetection[]>);
+  
+  // Create view results
+  Object.entries(byLocation).forEach(([location, detections]) => {
+    views[location] = {
+      detection_count: detections.length,
+      detections,
+    };
+  });
+  
+  // If no location info, put all in 'main' view
+  if (Object.keys(views).length === 0 && result.damages_detected.length > 0) {
+    views['main'] = {
+      detection_count: result.damages_detected.length,
+      detections: result.damages_detected.map(transformPolicyDetection),
+    };
+  }
+  
+  // Count by class
+  const detection_counts_by_class = result.damages_detected.reduce((acc, det) => {
+    acc[det.damage_type] = (acc[det.damage_type] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+  
+  // Review flags from decision trace
+  const review_flags = result.decision_trace.map(t => ({
+    code: t.rule_applied,
+    view: 'all',
+    message: t.evidence,
+  }));
+  
+  return {
+    assessment_id: result.assessment_id,
+    created_at: result.timestamp,
+    workflow: 'policy_driven_assessment',
+    model_name: result.model_version,
+    confidence_threshold: 0.25, // Not in response, using default
+    image_size: 640, // Not in response, using default
+    views,
+    detection_counts_by_class,
+    total_detections: result.total_damages,
+    review_required: result.human_review_required,
+    review_flags,
+    validation: {},
+    limitations: [
+      'Single image assessment - may not capture all damage angles',
+      'Policy-driven decision - no LLM involved in core decision',
+      'Cost estimates are approximate based on damage type/severity',
+    ],
+    estimated_repair_cost_min: result.damages_detected.reduce((sum, d) => sum + d.estimated_cost, 0),
+    estimated_repair_cost_max: result.damages_detected.reduce((sum, d) => sum + Math.round(d.estimated_cost * 1.5), 0),
+    settlement_offer: result.damages_detected.reduce((sum, d) => sum + Math.round(d.estimated_cost * 0.7), 0),
+    settlement_min: 0,
+    settlement_max: 0,
+    severity: result.damages_detected.length > 0 
+      ? result.damages_detected.reduce((max, d) => {
+          const sevRank = { minor: 1, moderate: 2, severe: 3 };
+          return sevRank[d.severity] > sevRank[max] ? d.severity : max;
+        }, 'minor' as 'minor' | 'moderate' | 'severe')
+      : 'uncertain',
+    primary_component: result.damages_detected[0]?.location || 'Unknown',
+    damage_summary: `${result.total_damages} damage(s) detected. Decision: ${result.decision}. ${result.decision_trace[0]?.evidence || ''}`,
+  };
+}
+
 async function handleResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
@@ -251,6 +405,36 @@ export async function checkHealth(): Promise<HealthCheck> {
 
 export async function getModelInfo(): Promise<ModelInfo> {
   const response = await fetch(`${API_BASE_URL}/model/info`);
+  return handleResponse(response);
+}
+
+// ─── Policy-Driven Assessment (New /assess/ endpoint) ─────────────────────────
+export interface PolicyAssessmentRequest {
+  image: File;
+  confidence_threshold?: number;
+}
+
+export async function assessPolicy(request: PolicyAssessmentRequest): Promise<AssessmentResponse> {
+  const formData = new FormData();
+  formData.append('image', request.image);
+  formData.append('confidence_threshold', String(request.confidence_threshold ?? 0.25));
+
+  const response = await fetch(`${API_BASE_URL}/assess/`, {
+    method: 'POST',
+    body: formData,
+  });
+  
+  const result = await handleResponse<PolicyAssessmentResult>(response);
+  return transformPolicyAssessment(result);
+}
+
+export async function checkPolicyHealth(): Promise<PolicyHealthResponse> {
+  const response = await fetch(`${API_BASE_URL}/assess/health`);
+  return handleResponse(response);
+}
+
+export async function getPolicyConfig(): Promise<PolicyConfigResponse> {
+  const response = await fetch(`${API_BASE_URL}/assess/policy`);
   return handleResponse(response);
 }
 
@@ -292,6 +476,170 @@ export async function assessGeneral(request: GeneralAssessmentRequest): Promise<
   formData.append('image_size', String(request.image_size ?? 640));
 
   const response = await fetch(`${API_BASE_URL}/assess/general`, {
+    method: 'POST',
+    body: formData,
+  });
+  return handleResponse(response);
+}
+
+// ─── Video + Four-View Assessment ───────────────────────────────────────────
+
+export interface VideoFourViewAssessmentRequest {
+  video: File;
+  top: File;
+  bottom: File;
+  left: File;
+  right: File;
+  confidence_threshold?: number;
+  image_size?: number;
+}
+
+export interface VideoFrameResult {
+  frame_index: number;
+  timestamp_ms: number;
+  detection_count: number;
+  detections: Array<{
+    damage_type: string;
+    confidence: number;
+    bounding_box_xyxy: number[];
+  }>;
+}
+
+export interface PhotoViewResult {
+  detection_count: number;
+  detections: DamageDetection[];
+  annotated_image_base64?: string;
+  error?: string;
+}
+
+export interface VideoFourViewAssessmentResponse {
+  assessment_id: string;
+  timestamp: string;
+  processing_time_ms: number;
+  video_processed: boolean;
+  video_frames_extracted: number;
+  video_duration_seconds: number;
+  photos_processed: number;
+  video_frames: VideoFrameResult[];
+  photos: Record<string, PhotoViewResult>;
+  all_detections: Array<{
+    damage_type: string;
+    confidence: number;
+    bounding_box_xyxy: number[];
+  }>;
+  total_detections: number;
+  severity: 'minor' | 'moderate' | 'severe' | 'uncertain';
+  primary_component: string;
+  damage_summary: string;
+  estimated_repair_cost_min: number;
+  estimated_repair_cost_max: number;
+  settlement_offer: number;
+  settlement_min: number;
+  settlement_max: number;
+  limitations: string[];
+}
+
+export async function assessVideoFourView(request: VideoFourViewAssessmentRequest): Promise<VideoFourViewAssessmentResponse> {
+  const formData = new FormData();
+  formData.append('video', request.video);
+  formData.append('top', request.top);
+  formData.append('bottom', request.bottom);
+  formData.append('left', request.left);
+  formData.append('right', request.right);
+  formData.append('confidence_threshold', String(request.confidence_threshold ?? 0.25));
+  formData.append('image_size', String(request.image_size ?? 640));
+
+  const response = await fetch(`${API_BASE_URL}/assess/video-four-view`, {
+    method: 'POST',
+    body: formData,
+  });
+  return handleResponse(response);
+}
+
+// ─── ICICI Lombard Screening ───────────────────────────────────────────────
+
+export interface ICICILombardScreeningRequest {
+  // Product & Coverage
+  product_type: 'private_car_package' | 'standalone_own_damage' | 'bundled_comprehensive' | 'third_party_only' | 'unknown';
+  own_damage_cover: boolean;
+  
+  // Policy Period
+  policy_start_date: string; // YYYY-MM-DD
+  policy_end_date: string;
+  incident_date: string;
+  
+  // Vehicle Valuation
+  idv: number;
+  
+  // Cost Estimates
+  repair_estimate_min: number;
+  repair_estimate_max: number;
+  retrieval_towing_cost: number;
+  estimate_source: 'ai_preliminary' | 'garage_quotation' | 'surveyor_assessed';
+  
+  // Salvage & Deductible (optional)
+  salvage_value?: number;
+  deductible?: number;
+  
+  // Evidence
+  four_view_validated: boolean;
+  cv_review_required: boolean;
+  evidence_concerns: string[];
+  detected_damage_classes: string[];
+  damage_severity?: string;
+  max_detection_confidence?: number;
+  
+  // Claim Circumstances
+  reported_cause?: string;
+  driver_licence_valid?: boolean;
+  vehicle_use_compliant?: boolean;
+  driver_impairment_confirmed?: boolean;
+  claim_notified_promptly?: boolean;
+  
+  // Verification
+  policy_schedule_verified: boolean;
+  adjuster_confirmed_accident: boolean;
+  surveyor_unrepairable: boolean;
+}
+
+export interface ICICILombardScreeningResponse {
+  outcome: 'standard_partial_loss' | 'potential_ctl' | 'potential_total_loss' | 'surveyor_unrepairable' | 'product_mismatch' | 'incomplete_information' | 'policy_exclusion_review' | 'human_review_required';
+  reason_codes: string[];
+  explanation: string;
+  missing_information: string[];
+  human_review_required: boolean;
+  decision_is_final: boolean;
+  automatic_payment_authorized: boolean;
+  ctl_threshold_inr: number;
+  repair_plus_retrieval_cost_range_inr: { min: number; max: number };
+  cost_as_percent_of_idv_range: { min: number; max: number };
+  cash_loss_route_candidate: boolean;
+  illustrative_cash_loss_calculation_inr?: {
+    idv: number;
+    salvage_value: number;
+    deductible: number;
+    illustrative_cash_loss: number;
+  };
+  next_steps: string[];
+  policy_sources: string[];
+  disclaimer: string;
+}
+
+export async function screenICICILombardSuitability(request: ICICILombardScreeningRequest): Promise<ICICILombardScreeningResponse> {
+  const formData = new FormData();
+  
+  // Convert request to form data
+  Object.entries(request).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) {
+      if (Array.isArray(value)) {
+        value.forEach(v => formData.append(key, String(v)));
+      } else {
+        formData.append(key, String(value));
+      }
+    }
+  });
+
+  const response = await fetch(`${API_BASE_URL}/policy/icici-lombard/suitability`, {
     method: 'POST',
     body: formData,
   });

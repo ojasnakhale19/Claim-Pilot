@@ -5,7 +5,7 @@ import { Button } from '../ui/Button';
 import { Card, CardContent } from '../ui/Card';
 import { Badge } from '../ui/Badge';
 import { Progress } from '../ui/Progress';
-import { cn, isValidImageFile, getFileSizeString } from '../../lib/utils';
+import { cn, isValidImageFile, getFileSizeString, formatDamageType } from '../../lib/utils';
 import { createClaimPilotYOLO, type Detection, type InferenceState } from '../../lib/yoloInference';
 
 const REQUIRED_VIEWS = [
@@ -48,6 +48,7 @@ interface FourViewInferenceProps {
   onValidationError: (validation: any) => void;
   onFilesChange?: (files: Record<string, File | null>) => void;
   disabled?: boolean;
+  useBackendFallback?: boolean; // Use backend API if local model fails
 }
 
 export function FourViewInference({
@@ -56,6 +57,7 @@ export function FourViewInference({
   onValidationError,
   onFilesChange,
   disabled = false,
+  useBackendFallback = true,
 }: FourViewInferenceProps) {
   const [viewStates, setViewStates] = useState<Record<string, ViewUploadState>>({});
   const [inferencing, setInferencing] = useState(false);
@@ -63,6 +65,8 @@ export function FourViewInference({
   const [inferenceStep, setInferenceStep] = useState(0);
   const [showResults, setShowResults] = useState(false);
   const [inferenceResults, setInferenceResults] = useState<Record<string, InferenceState>>({});
+  const [modelReady, setModelReady] = useState(false);
+  const [modelError, setModelError] = useState<string | null>(null);
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const yoloRef = useRef<ReturnType<typeof createClaimPilotYOLO> | null>(null);
 
@@ -73,10 +77,32 @@ export function FourViewInference({
     'Calculating settlement…',
   ];
 
-  // Initialize YOLO model
+  // Initialize YOLO model with proper error handling
   useEffect(() => {
-    yoloRef.current = createClaimPilotYOLO('/best.onnx');
-    yoloRef.current.initialize().catch(console.error);
+    let mounted = true;
+    
+    const initModel = async () => {
+      try {
+        yoloRef.current = createClaimPilotYOLO('/best.onnx');
+        await yoloRef.current.initialize();
+        if (mounted) {
+          setModelReady(true);
+          setModelError(null);
+        }
+      } catch (err: any) {
+        console.error('Local YOLO model failed to initialize:', err);
+        if (mounted) {
+          setModelError(err.message || 'Failed to load local AI model. The ONNX model may be corrupted or missing.');
+          setModelReady(false);
+        }
+      }
+    };
+    
+    initModel();
+    
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   // Initialize view states
@@ -168,12 +194,13 @@ export function FourViewInference({
     const primaryDetection = allDetections.reduce((max, d) => 
       d.confidence > max.confidence ? d : max, allDetections[0]
     );
-    const primaryComponent = primaryDetection?.className || 'Unknown';
+    const primaryComponent = primaryDetection ? formatDamageType(primaryDetection.className) : 'Unknown';
 
-    // Count detections by class
+    // Count detections by class (using formatted names)
     const detectionCounts: Record<string, number> = {};
     allDetections.forEach(d => {
-      detectionCounts[d.className] = (detectionCounts[d.className] || 0) + 1;
+      const formattedName = formatDamageType(d.className);
+      detectionCounts[formattedName] = (detectionCounts[formattedName] || 0) + 1;
     });
 
     // Create damage summary
@@ -182,14 +209,15 @@ export function FourViewInference({
       .join(', ') || 'No damage detected';
 
     // Determine severity based on highest confidence detection
-    const severityOrder = { minor: 1, moderate: 2, severe: 3, uncertain: 0 } as const;
-    const maxSeverity = allDetections.reduce((max, d) => {
-      const key = d.className as keyof typeof severityOrder;
-      return severityOrder[key] > severityOrder[max.className as keyof typeof severityOrder] ? d : max;
-    }, allDetections[0]);
-    const severity = (maxSeverity?.className as any) || 'minor';
+    // Map confidence to severity: high confidence -> severe, medium -> moderate, low -> minor
+    const maxConfidence = allDetections.reduce((max, d) => d.confidence > max.confidence ? d : max, allDetections[0])?.confidence || 0;
+    let severity: 'minor' | 'moderate' | 'severe' | 'uncertain' = 'uncertain';
+    if (maxConfidence >= 0.7) severity = 'severe';
+    else if (maxConfidence >= 0.5) severity = 'moderate';
+    else if (maxConfidence >= 0.3) severity = 'minor';
+    else severity = 'uncertain';
 
-    // Calculate costs using simple estimation
+    // Calculate costs using simple estimation based on severity
     type SeverityKey = 'minor' | 'moderate' | 'severe' | 'uncertain';
     const costPerDetection: Record<SeverityKey, { min: number; max: number }> = {
       minor: { min: 3000, max: 8000 },
@@ -199,9 +227,8 @@ export function FourViewInference({
     };
 
     let totalMin = 0, totalMax = 0;
-    allDetections.forEach(d => {
-      const severityKey = d.className as SeverityKey;
-      const cost = costPerDetection[severityKey] || { min: 5000, max: 15000 };
+    allDetections.forEach(_d => {
+      const cost = costPerDetection[severity] || { min: 5000, max: 15000 };
       totalMin += cost.min;
       totalMax += cost.max;
     });
@@ -247,13 +274,10 @@ export function FourViewInference({
     };
   }, [viewStates]);
 
-  const startInference = useCallback(async () => {
+  // Backend fallback inference
+  const startBackendInference = useCallback(async () => {
     if (!allViewsUploaded) {
       onError('Please upload all four required views.');
-      return;
-    }
-    if (!yoloRef.current) {
-      onError('YOLO model not loaded. Please refresh and try again.');
       return;
     }
 
@@ -263,7 +287,90 @@ export function FourViewInference({
     setShowResults(false);
 
     try {
-      // Step 1: Model loading
+      const formData = new FormData();
+      REQUIRED_VIEWS.forEach(view => {
+        const file = viewStates[view.id]?.file;
+        if (file) {
+          formData.append(view.id, file);
+        }
+      });
+      formData.append('confidence_threshold', '0.25');
+      formData.append('image_size', '640');
+
+      // Show progress for backend call
+      for (let i = 0; i < inferenceSteps.length; i++) {
+        await new Promise(r => setTimeout(r, 600));
+        setInferenceStep(i + 1);
+        setInferenceProgress(Math.round(((i + 1) / inferenceSteps.length) * 100));
+      }
+
+      const response = await fetch('http://localhost:8000/assess/four-view', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Backend inference failed' }));
+        throw new Error(error.detail || `HTTP ${response.status}`);
+      }
+
+      const backendResult = await response.json();
+
+      // Convert backend result to local format
+      const results: Record<string, InferenceViewState> = {};
+      REQUIRED_VIEWS.forEach(view => {
+        const viewResult = backendResult.views[view.id];
+        if (viewResult) {
+          results[view.id] = {
+            detections: viewResult.detections.map((det: any) => ({
+              classId: 0,
+              className: det.damage_type,
+              confidence: det.confidence,
+              bbox: det.bounding_box_xyxy,
+            })),
+            annotatedImage: viewResult.annotated_image_base64,
+            processingTime: 0,
+          };
+        }
+      });
+
+      setInferenceResults(results);
+      setShowResults(true);
+
+      // Convert to assessment format and callback
+      const assessment = convertToAssessment(results);
+      onInferenceComplete(assessment);
+
+    } catch (err: any) {
+      console.error('Backend inference error:', err);
+      onError(err.message || 'Backend inference failed. Please try again.');
+    } finally {
+      setInferencing(false);
+    }
+  }, [allViewsUploaded, viewStates, onError, onInferenceComplete]);
+
+  const startInference = useCallback(async () => {
+    if (!allViewsUploaded) {
+      onError('Please upload all four required views.');
+      return;
+    }
+    if (!modelReady) {
+      if (modelError && useBackendFallback) {
+        // Try backend fallback
+        await startBackendInference();
+        return;
+      }
+      onError(modelError || 'YOLO model not loaded. Please refresh and try again.');
+      return;
+    }
+
+    setInferencing(true);
+    setInferenceProgress(0);
+    setInferenceStep(0);
+    setShowResults(false);
+
+    try {
+      // Step 1: Model loading (already done, just show progress)
       for (let i = 0; i < inferenceSteps.length; i++) {
         await new Promise(r => setTimeout(r, 600));
         setInferenceStep(i + 1);
@@ -303,7 +410,7 @@ export function FourViewInference({
           ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
           ctx.fillStyle = '#0ea5e9';
           ctx.font = '14px monospace';
-          ctx.fillText(`${det.className} ${(det.confidence * 100).toFixed(1)}%`, x1, Math.max(y1 - 5, 15));
+          ctx.fillText(`${formatDamageType(det.className)} ${(det.confidence * 100).toFixed(1)}%`, x1, Math.max(y1 - 5, 15));
         });
 
         const annotatedBase64 = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
@@ -679,7 +786,7 @@ export function FourViewInference({
                         ) : (
                           detections.map((det, i) => (
                             <div key={i} className="flex items-center justify-between text-sm p-2 rounded bg-graphite-800/50">
-                              <span className="text-graphite-300">{det.className}</span>
+                              <span className="text-graphite-300">{formatDamageType(det.className)}</span>
                               <span className="font-mono text-electric-400">{(det.confidence * 100).toFixed(1)}%</span>
                             </div>
                           ))
@@ -719,18 +826,56 @@ export function FourViewInference({
 
       {/* Ready to Inference */}
       {allViewsUploaded && !inferencing && !showResults && (
-        <motion.button
-          onClick={startInference}
-          disabled={disabled}
-          className="w-full gap-2 px-6 py-4 rounded-xl bg-gradient-to-r from-electric-500 to-cyan-500 text-background font-semibold shadow-glow-electric hover:from-electric-400 hover:to-cyan-400 transition-all disabled:opacity-50"
-          whileHover={{ y: -2, boxShadow: '0 0 30px -5px rgba(14, 165, 233, 0.5)' }}
-          whileTap={{ scale: 0.98 }}
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-        >
-          <Zap className="h-5 w-5" />
-          Run Local AI Assessment on Four Views
-        </motion.button>
+        <div className="space-y-4">
+          {/* Model Status */}
+          <div className="flex items-center justify-between p-4 rounded-xl border bg-graphite-900/50">
+            <div className="flex items-center gap-3">
+              <div className={cn(
+                'flex h-8 w-8 items-center justify-center rounded-lg',
+                modelReady ? 'bg-success-500/20 border border-success-500/30' : 'bg-danger-500/20 border border-danger-500/30'
+              )}>
+                {modelReady ? (
+                  <CheckCircle className="h-5 w-5 text-success-400" />
+                ) : (
+                  <AlertCircle className="h-5 w-5 text-danger-400" />
+                )}
+              </div>
+              <div>
+                <p className="font-medium text-graphite-100 text-sm">
+                  {modelReady ? 'Local AI Model Ready' : 'Local AI Model Unavailable'}
+                </p>
+                <p className="text-xs text-graphite-500">
+                  {modelReady 
+                    ? 'YOLOv8 loaded and ready for on-device inference'
+                    : modelError 
+                      ? `Error: ${modelError}. Using backend fallback.`
+                      : 'Loading model...'}
+                </p>
+              </div>
+            </div>
+            {modelError && useBackendFallback && (
+              <Badge variant="secondary" className="text-[10px]">BACKEND FALLBACK</Badge>
+            )}
+          </div>
+
+          {/* Run Button */}
+          <motion.button
+            onClick={startInference}
+            disabled={disabled || (!modelReady && !useBackendFallback)}
+            className="w-full gap-2 px-6 py-4 rounded-xl bg-gradient-to-r from-electric-500 to-cyan-500 text-background font-semibold shadow-glow-electric hover:from-electric-400 hover:to-cyan-400 transition-all disabled:opacity-50"
+            whileHover={{ y: -2, boxShadow: '0 0 30px -5px rgba(14, 165, 233, 0.5)' }}
+            whileTap={{ scale: 0.98 }}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+          >
+            <Zap className="h-5 w-5" />
+            {modelReady 
+              ? 'Run Local AI Assessment on Four Views'
+              : useBackendFallback
+                ? 'Run Assessment via Backend (Local model unavailable)'
+                : 'Model not ready'}
+          </motion.button>
+        </div>
       )}
 
       {!allViewsUploaded && !inferencing && !showResults && (
