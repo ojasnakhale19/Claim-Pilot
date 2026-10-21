@@ -150,15 +150,29 @@ export function FourViewInference({
     e.target.value = '';
   }, [processFile]);
 
-  const handleDrag = useCallback((_viewId: string, e: React.DragEvent) => {
+  const handleDrag = useCallback((_viewId: string, e: React.DragEvent | React.TouchEvent) => {
     e.preventDefault();
     e.stopPropagation();
   }, []);
 
-  const handleDrop = useCallback((viewId: string, e: React.DragEvent) => {
+  const handleDrop = useCallback((viewId: string, e: React.DragEvent | React.TouchEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    const file = e.dataTransfer.files[0];
+    
+    let file: File | null = null;
+    if ('dataTransfer' in e) {
+      file = e.dataTransfer.files[0];
+    } else if ('touches' in e && e.changedTouches.length > 0) {
+      // Handle touch drop - get file from dataTransfer if available
+      const touch = e.changedTouches[0];
+      if (touch.target && (touch.target as HTMLInputElement).files) {
+        const files = (touch.target as HTMLInputElement).files;
+        if (files && files.length > 0) {
+          file = files[0];
+        }
+      }
+    }
+    
     if (file) {
       setViewStates(prev => ({ ...prev, [viewId]: { ...prev[viewId], loading: true } }));
       processFile(viewId, file);
@@ -476,18 +490,18 @@ export function FourViewInference({
       </div>
 
       {/* Progress indicator */}
-      <div className="flex items-center justify-center gap-2 mb-4">
+      <div className="flex items-center justify-center gap-2 mb-4 mobile-flex-col mobile-gap-4">
         {REQUIRED_VIEWS.map((view, index) => (
           <motion.div
             key={view.id}
-            className="flex items-center gap-2"
+            className="flex items-center gap-2 flex-shrink-0"
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: index * 0.1 }}
           >
             <motion.div
               className={cn(
-                'flex h-10 w-10 items-center justify-center rounded-xl font-mono text-xs font-bold transition-all',
+                'flex h-10 w-10 items-center justify-center rounded-xl font-mono text-xs font-bold transition-all touch-target-comfortable',
                 viewStates[view.id]?.file
                   ? 'bg-success-500/20 border border-success-500/30 text-success-400'
                   : 'bg-graphite-800/50 border border-graphite-700 text-graphite-500'
@@ -497,12 +511,12 @@ export function FourViewInference({
             >
               {viewStates[view.id]?.file ? <CheckCircle className="h-5 w-5" /> : view.icon}
             </motion.div>
-            <span className={cn('text-xs font-medium hidden sm:block', viewStates[view.id]?.file ? 'text-success-400' : 'text-graphite-500')}>
+            <span className={cn('text-xs font-medium', viewStates[view.id]?.file ? 'text-success-400' : 'text-graphite-500')}>
               {view.label}
             </span>
             {index < REQUIRED_VIEWS.length - 1 && (
               <motion.div
-                className={cn('h-0.5 w-12 rounded-full', viewStates[REQUIRED_VIEWS[index + 1].id]?.file ? 'bg-success-500' : 'bg-graphite-700')}
+                className={cn('h-0.5 w-12 rounded-full mobile-w-8', viewStates[REQUIRED_VIEWS[index + 1].id]?.file ? 'bg-success-500' : 'bg-graphite-700')}
                 initial={{ width: 0 }}
                 animate={{ width: viewStates[REQUIRED_VIEWS[index + 1].id]?.file ? '3rem' : 0 }}
                 transition={{ duration: 0.3, delay: 0.1 }}
@@ -513,7 +527,7 @@ export function FourViewInference({
       </div>
 
       {/* Upload Grid */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 mobile-grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
         {REQUIRED_VIEWS.map((view) => {
           const state = viewStates[view.id];
           const isUploaded = !!state?.file;
@@ -542,12 +556,12 @@ export function FourViewInference({
                       {view.icon}
                     </span>
                     <div>
-                      <p className="font-medium text-graphite-100 text-sm">{view.label}</p>
-                      <p className="text-xs text-graphite-500">{view.desc}</p>
+                      <p className="font-medium text-graphite-100 text-sm mobile-text-sm">{view.label}</p>
+                      <p className="text-xs text-graphite-500 mobile-text-xs">{view.desc}</p>
                     </div>
                   </div>
                   {isUploaded && (
-                    <Badge variant="success" className="text-[10px]">LOCAL</Badge>
+                    <Badge variant="success" className="text-[10px] mobile-text-xs">LOCAL</Badge>
                   )}
                 </div>
               </div>
@@ -577,21 +591,21 @@ export function FourViewInference({
                       <p className="text-[10px] text-graphite-300">{state.file ? getFileSizeString(state.file.size) : ''}</p>
                     </div>
                     {/* Overlay buttons */}
-                    <div className="absolute top-2 right-2 flex gap-1">
+                    <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity opacity-100 md:opacity-0 md:group-hover:opacity-100">
                       <button
                         onClick={() => removeFile(view.id)}
-                        className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded bg-danger-500/90 text-white hover:bg-danger-500"
+                        className="p-2 rounded bg-danger-500/90 text-white hover:bg-danger-500 touch-target-comfortable"
                         aria-label={`Remove ${view.label}`}
                         disabled={inferencing}
                       >
-                        <X className="h-3.5 w-3.5" />
+                        <X className="h-5 w-5" />
                       </button>
                       <button
                         onClick={() => state.preview && window.open(state.preview, '_blank')}
-                        className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded bg-graphite-800/90 text-graphite-300 hover:bg-electric-500/20 hover:text-electric-400"
+                        className="p-2 rounded bg-graphite-800/90 text-graphite-300 hover:bg-electric-500/20 hover:text-electric-400 touch-target-comfortable"
                         aria-label={`View ${view.label} full size`}
                       >
-                        <Eye className="h-3.5 w-3.5" />
+                        <Eye className="h-5 w-5" />
                       </button>
                     </div>
                   </>
@@ -633,6 +647,9 @@ export function FourViewInference({
                   onDragLeave={e => handleDrag(view.id, e)}
                   onDragOver={e => handleDrag(view.id, e)}
                   onDrop={e => handleDrop(view.id, e)}
+                  onTouchStart={e => handleDrag(view.id, e as any)}
+                  onTouchMove={e => handleDrag(view.id, e as any)}
+                  onTouchEnd={e => handleDrop(view.id, e as any)}
                 />
               </div>
 
@@ -641,12 +658,12 @@ export function FourViewInference({
                 <div className="px-4 pb-4">
                   <Button
                     variant="outline"
-                    size="sm"
+                    size="mobile"
                     className="w-full border-graphite-600 text-graphite-300 hover:border-electric-500 hover:text-electric-400 hover:bg-electric-500/10"
                     onClick={() => triggerFileInput(view.id)}
                     disabled={disabled || inferencing}
                   >
-                    <Camera className="h-3.5 w-3.5 mr-1" />
+                    <Camera className="h-4 w-4 mr-1" />
                     Select File
                   </Button>
                 </div>

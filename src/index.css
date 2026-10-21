@@ -128,6 +128,12 @@
   --radius-xl: 1rem;
   --radius-2xl: 1.5rem;
   --radius-3xl: 2rem;
+
+  /* Mobile-specific spacing */
+  --touch-target-min: 44px;
+  --touch-target-comfortable: 48px;
+  --mobile-header-height: 56px;
+  --mobile-bottom-nav-height: 72px;
 }
 
 @layer base {
@@ -137,6 +143,8 @@
 
   html {
     scroll-behavior: smooth;
+    /* Prevent horizontal scroll on mobile */
+    overflow-x: hidden;
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -158,6 +166,12 @@
     background-image: var(--bg-asphalt), var(--bg-grid);
     background-size: 200px 200px, 40px 40px;
     background-position: center, center;
+    /* Prevent overscroll bounce on iOS */
+    overscroll-behavior: none;
+    /* Improve text rendering on mobile */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
   }
 
   /* Custom scrollbar */
@@ -184,14 +198,47 @@
     background-color: rgb(58 65 71);
   }
 
+  /* Mobile-friendly scrollbar */
+  @media (max-width: 768px) {
+    .scrollbar-thin::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    .scrollbar-thin::-webkit-scrollbar-thumb {
+      background-color: rgb(58 65 71);
+      border-radius: 4px;
+    }
+  }
+
   /* Selection */
   ::selection {
     @apply bg-electric-500/30 text-white;
   }
 
-  /* Focus visible */
+  /* Focus visible - mobile friendly */
   :focus-visible {
     @apply outline-none ring-2 ring-electric-500 ring-offset-2 ring-offset-background;
+  }
+
+  /* Prevent zoom on input focus on iOS */
+  @media screen and (max-width: 768px) {
+    input, select, textarea {
+      font-size: 16px !important;
+    }
+  }
+
+  /* Touch target minimum sizes */
+  @media (pointer: coarse) {
+    button, [role="button"], a, input, select, textarea, [tabindex="0"] {
+      min-height: var(--touch-target-min);
+      min-width: var(--touch-target-min);
+    }
+    
+    /* Comfortable touch targets for primary actions */
+    button:not([size="sm"]), [role="button"]:not([size="sm"]) {
+      min-height: var(--touch-target-comfortable);
+      min-width: var(--touch-target-comfortable);
+    }
   }
 }
 
@@ -384,6 +431,172 @@
   @keyframes damage-pulse {
     0%, 100% { box-shadow: 0 0 0 0 rgba(14, 165, 233, 0.4); }
     50% { box-shadow: 0 0 0 8px rgba(14, 165, 233, 0); }
+  }
+
+  /* Typing indicator */
+  .typing-dots span {
+    @apply w-1.5 h-1.5 rounded-full bg-graphite-400 animate-bounce;
+    animation-delay: calc(var(--i) * 150ms);
+  }
+
+  @keyframes damage-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(14, 165, 233, 0.4); }
+    50% { box-shadow: 0 0 0 8px rgba(14, 165, 233, 0); }
+  }
+
+  /* Mobile utility classes */
+  .touch-target {
+    @media (pointer: coarse) {
+      min-height: var(--touch-target-min);
+      min-width: var(--touch-target-min);
+    }
+  }
+
+  .touch-target-comfortable {
+    @media (pointer: coarse) {
+      min-height: var(--touch-target-comfortable);
+      min-width: var(--touch-target-comfortable);
+    }
+  }
+
+  /* Touch-friendly tap highlight */
+  .tap-highlight {
+    -webkit-tap-highlight-color: transparent;
+  }
+  
+  .tap-highlight-electric {
+    -webkit-tap-highlight-color: rgba(14, 165, 233, 0.3);
+  }
+
+  /* Mobile-safe tap area for interactive elements */
+  .tap-area {
+    @media (pointer: coarse) {
+      padding: 12px;
+      margin: -12px;
+    }
+  }
+
+  /* Mobile-friendly text sizing */
+  .text-mobile-sm {
+    @media (max-width: 640px) {
+      @apply text-sm;
+    }
+  }
+
+  .text-mobile-base {
+    @media (max-width: 640px) {
+      @apply text-base;
+    }
+  }
+
+  .text-mobile-lg {
+    @media (max-width: 640px) {
+      @apply text-lg;
+    }
+  }
+
+  /* Mobile spacing */
+  .mobile-p-4 {
+    @media (max-width: 640px) {
+      @apply p-4;
+    }
+  }
+
+  .mobile-px-4 {
+    @media (max-width: 640px) {
+      @apply px-4;
+    }
+  }
+
+  .mobile-py-4 {
+    @media (max-width: 640px) {
+      @apply py-4;
+    }
+  }
+
+  .mobile-gap-4 {
+    @media (max-width: 640px) {
+      @apply gap-4;
+    }
+  }
+
+  /* Mobile stack */
+  .mobile-flex-col {
+    @media (max-width: 640px) {
+      @apply flex-col;
+    }
+  }
+
+  .mobile-items-center {
+    @media (max-width: 640px) {
+      @apply items-center;
+    }
+  }
+
+  /* Hide on mobile */
+  .hidden-mobile {
+    @media (max-width: 640px) {
+      @apply hidden;
+    }
+  }
+
+  /* Show only on mobile */
+  .mobile-only {
+    @apply hidden;
+    @media (max-width: 640px) {
+      @apply block;
+    }
+  }
+
+  /* Mobile grid adjustments */
+  .mobile-grid-cols-1 {
+    @media (max-width: 640px) {
+      @apply grid-cols-1;
+    }
+  }
+
+  .mobile-grid-cols-2 {
+    @media (max-width: 640px) {
+      @apply grid-cols-2;
+    }
+  }
+
+  /* Mobile full width */
+  .mobile-w-full {
+    @media (max-width: 640px) {
+      @apply w-full;
+    }
+  }
+
+  /* Mobile touch-friendly tap areas */
+  .touch-friendly {
+    @media (pointer: coarse) {
+      min-height: 44px;
+      min-width: 44px;
+    }
+  }
+
+  /* Disable hover on mobile */
+  @media (pointer: coarse) {
+    .hover\:scale-105:hover {
+      transform: none;
+    }
+    .hover\:scale-110:hover {
+      transform: none;
+    }
+    .hover\:-translate-y-1:hover {
+      transform: none;
+    }
+    .hover\:-translate-y-2:hover {
+      transform: none;
+    }
+  }
+
+  /* Mobile-safe inputs */
+  @media screen and (max-width: 768px) {
+    input, select, textarea {
+      font-size: 16px !important;
+    }
   }
 
   /* Typing indicator */

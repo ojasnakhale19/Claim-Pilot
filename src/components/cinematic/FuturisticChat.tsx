@@ -64,10 +64,10 @@ export function FuturisticChat({
   const formatTime = (date: Date) => date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
   return (
-    <div className="space-y-6 animate-in" role="region" aria-label="Settlement negotiation">
+    <div className="space-y-6 animate-in mobile-flex-col" role="region" aria-label="Settlement negotiation">
       {/* Chat Header */}
       <motion.div
-        className="flex items-center justify-between gap-4"
+        className="flex items-center justify-between gap-4 mobile-flex-col mobile-items-center mobile-gap-4"
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5 }}
@@ -83,13 +83,13 @@ export function FuturisticChat({
           </motion.div>
           <div>
             <h3 className="text-lg font-bold text-graphite-100">Settlement Negotiation</h3>
-            <p className="text-xs text-graphite-500 font-mono">
+            <p className="text-xs text-graphite-500 font-mono mobile-text-xs">
               {assessment ? `ASSESSMENT: ${assessment.data.component.toUpperCase()} · ${assessment.data.severity.toUpperCase()}` : 'AWAITING ASSESSMENT'}
             </p>
           </div>
         <motion.button
             onClick={() => setShowOfferDetails(!showOfferDetails)}
-            className="p-2 rounded-xl bg-graphite-800/50 border border-graphite-700 text-graphite-400 hover:text-electric-400 hover:border-electric-500/50 transition-all"
+            className="p-2 rounded-xl bg-graphite-800/50 border border-graphite-700 text-graphite-400 hover:text-electric-400 hover:border-electric-500/50 transition-all touch-target-comfortable"
             whileHover={{ scale: 1.1 }}
             whileTap={{ scale: 0.95 }}
             aria-label={showOfferDetails ? 'Hide offer panel' : 'Show offer panel'}
@@ -101,7 +101,7 @@ export function FuturisticChat({
 
       {/* Chat Messages */}
       <motion.div
-        className="rounded-3xl border border-graphite-700 bg-graphite-900/50 backdrop-blur-2xl overflow-hidden"
+        className="rounded-3xl border border-graphite-700 bg-graphite-900/50 backdrop-blur-2xl overflow-hidden mobile-h-full"
         initial={{ opacity: 0, y: 30, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         transition={{ duration: 0.6, delay: 0.1, ease: [0.16, 1, 0.3, 1] }}
@@ -109,7 +109,7 @@ export function FuturisticChat({
         {/* Tech header bar */}
         <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-transparent via-electric-500/50 to-transparent" aria-hidden="true" />
         
-        <div className="relative flex-1 overflow-y-auto p-4 space-y-4 h-[400px]" ref={chatContainerRef}>
+        <div className="relative flex-1 overflow-y-auto p-4 space-y-4 mobile-h-[300px] h-[400px]" ref={chatContainerRef}>
           {/* Connection status */}
           <motion.div
             className="flex items-center justify-center gap-2 text-[10px] font-mono text-graphite-500 py-2"
@@ -204,7 +204,7 @@ export function FuturisticChat({
                 }}
                 placeholder={isBotTyping ? 'ClaimPilot is analyzing…' : 'Enter counteroffer or message…'}
                 disabled={isBotTyping || disabled}
-                className="w-full h-11 px-5 rounded-xl border border-graphite-600 bg-graphite-900/50 text-sm text-graphite-100 placeholder:text-graphite-500 focus:outline-none focus:ring-2 focus:ring-electric-500 focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                className="w-full h-12 px-5 rounded-xl border border-graphite-600 bg-graphite-900/50 text-base placeholder:text-graphite-500 focus:outline-none focus:ring-2 focus:ring-electric-500 focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed transition-all"
                 aria-label="Chat message input"
               />
               {/* Input accent line */}
@@ -214,7 +214,7 @@ export function FuturisticChat({
             <motion.button
               onClick={onSendMessage}
               disabled={!chatInput.trim() || isBotTyping || disabled}
-              className="flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-electric-500 to-cyan-500 text-background font-medium shadow-glow-electric hover:from-electric-400 hover:to-cyan-400 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none transition-all"
+              className="flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-electric-500 to-cyan-500 text-background font-medium shadow-glow-electric hover:from-electric-400 hover:to-cyan-400 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none transition-all touch-target-comfortable"
               whileHover={{ scale: 1.05, boxShadow: '0 0 30px -5px rgba(14, 165, 233, 0.6)' }}
               whileTap={{ scale: 0.95 }}
               initial={{ opacity: 0, scale: 0.8 }}
@@ -226,7 +226,7 @@ export function FuturisticChat({
             </motion.button>
           </div>
 
-          <p className="mt-3 text-center text-[11px] text-graphite-500 font-mono">
+          <p className="mt-3 text-center text-[11px] text-graphite-500 font-mono mobile-text-xs">
             Commands: <span className="text-electric-400">"₹5000"</span> · <span className="text-amber-400">"more"</span> · <span className="text-graphite-400">"breakdown"</span> · <span className="text-success-400">"accept"</span>
           </p>
         </CardFooter>
@@ -249,8 +249,8 @@ export function FuturisticChat({
               transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
             />
 
-            <CardContent className="pt-6 pb-4 px-6">
-              <div className="flex items-center justify-between mb-5">
+            <CardContent className="pt-6 pb-4 px-4 sm:px-6">
+              <div className="flex items-center justify-between mb-5 mobile-flex-col mobile-items-center mobile-gap-4">
                 <motion.h4
                   className="font-medium text-graphite-100 flex items-center gap-2"
                   initial={{ opacity: 0, x: -10 }}
@@ -264,15 +264,15 @@ export function FuturisticChat({
               </div>
 
               <motion.div
-                className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-5 mb-5"
+                className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-5 mb-5 mobile-flex-col mobile-items-center mobile-gap-4"
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.1 }}
               >
-                <div className="relative">
-                  <p className="text-[10px] font-mono text-graphite-400 uppercase tracking-wider mb-1">SETTLEMENT AMOUNT</p>
+                <div className="relative mobile-text-center">
+                  <p className="text-[10px] font-mono text-graphite-400 uppercase tracking-wider mb-1 mobile-text-xs">SETTLEMENT AMOUNT</p>
                   <motion.p
-                    className="text-4xl font-bold font-mono tabular-nums text-gradient-electric"
+                    className="text-4xl font-bold font-mono tabular-nums text-gradient-electric mobile-text-3xl"
                     initial={{ opacity: 0, scale: 0.8 }}
                     animate={{ opacity: 1, scale: 1 }}
                     transition={{ duration: 0.5, delay: 0.2, ease: [0.34, 1.56, 0.64, 1] }}
@@ -281,10 +281,10 @@ export function FuturisticChat({
                   </motion.p>
                 </div>
 
-                <div className="text-right sm:text-right relative">
-                  <p className="text-[10px] font-mono text-graphite-400 uppercase tracking-wider mb-1">PERMITTED RANGE</p>
+                <div className="text-right sm:text-right relative mobile-text-center">
+                  <p className="text-[10px] font-mono text-graphite-400 uppercase tracking-wider mb-1 mobile-text-xs">PERMITTED RANGE</p>
                   <motion.p
-                    className="text-sm font-medium text-graphite-200 font-mono tabular-nums"
+                    className="text-sm font-medium text-graphite-200 font-mono tabular-nums mobile-text-base"
                     initial={{ opacity: 0, x: 10 }}
                     animate={{ opacity: 1, x: 0 }}
                     transition={{ delay: 0.3 }}
