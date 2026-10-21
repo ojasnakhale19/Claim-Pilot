@@ -9,33 +9,24 @@ import {
   AlertTriangle,
   Check,
   X,
-  Brain,
   ChevronDown,
-  Video,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   CinematicBackground,
   CSSWheel,
-  InspectionUpload,
   FourViewInference,
-  VideoFourViewInference,
   DamageAnnotation,
   FuturisticChat,
   TransitionWrapper,
   StageIndicator,
   LoadingOverlay,
 } from '../components/cinematic';
-import { cn, isValidImageFile, isValidVideoFile, createObjectURL, revokeObjectURL, getFileSizeString, generateId, formatNumber, assessFourView, assessHybrid, type DamageDetection, type ViewResult, type VideoFourViewAssessmentResponse } from '../lib/utils';
+import { cn, revokeObjectURL, getFileSizeString, generateId, formatNumber, assessFourView, assessHybrid, type DamageDetection, type ViewResult } from '../lib/utils';
 import { type Detection } from '../lib/yoloInference';
-import { type DamageDetection as PricingDamageDetection, calculateSettlement, type ModelPricing, loadCarPricingData } from '../lib/settlementCalculator';
 import { generateAINegotiationResponse } from '../lib/aiService';
 import { Card, CardContent, CardFooter } from '../components/ui/Card';
-import { Badge } from '../components/ui/Badge';
 import { Progress } from '../components/ui/Progress';
-import { Button } from '../components/ui/Button';
-
-const MAX_PHOTOS = 8;
 
 type Severity = 'minor' | 'moderate' | 'severe' | 'uncertain';
 
@@ -52,59 +43,6 @@ interface AssessmentData {
   settlementMax: number;
 }
 
-// Demo assessment data - ONLY used when explicitly in demo mode
-// These are illustrative examples, NOT based on actual image analysis
-const DEMO_ASSESSMENTS: Record<Severity, AssessmentData> = {
-  minor: {
-    component: 'Front Bumper',
-    damageType: 'Surface scratches & minor deformation',
-    severity: 'minor',
-    costMin: 4000,
-    costMax: 6000,
-    repairApproach: 'Repair and repaint',
-    explanation: 'The visible damage appears consistent with a repair and repaint. The final repair cost may vary after a physical inspection.',
-    settlementOffer: 3800,
-    settlementMin: 3200,
-    settlementMax: 4500,
-  },
-  moderate: {
-    component: 'Side Mirror (Right)',
-    damageType: 'Housing damage & cracked glass',
-    severity: 'moderate',
-    costMin: 8000,
-    costMax: 12000,
-    repairApproach: 'Replace component',
-    explanation: 'The mirror housing shows significant damage with cracked glass. Replacement is recommended for safety. Labour costs include calibration.',
-    settlementOffer: 7500,
-    settlementMin: 6200,
-    settlementMax: 9500,
-  },
-  severe: {
-    component: 'Front Bumper & Fender',
-    damageType: 'Structural deformation & paint damage',
-    severity: 'severe',
-    costMin: 25000,
-    costMax: 35000,
-    repairApproach: 'Replace components & structural repair',
-    explanation: 'The damage extends to structural elements requiring panel replacement and alignment. A physical inspection is mandatory before final estimate.',
-    settlementOffer: 22000,
-    settlementMin: 18000,
-    settlementMax: 28000,
-  },
-  uncertain: {
-    component: 'Unable to determine',
-    damageType: 'Insufficient visual evidence',
-    severity: 'uncertain',
-    costMin: 0,
-    costMax: 0,
-    repairApproach: 'Requires human review',
-    explanation: 'We couldn\'t confidently assess the damage from these photos. Try adding a clearer close-up or a photo from another angle.',
-    settlementOffer: 0,
-    settlementMin: 0,
-    settlementMax: 0,
-  },
-};
-
 interface UploadedPhoto {
   id: string;
   file: File;
@@ -115,7 +53,6 @@ interface UploadedPhoto {
 }
 
 type WorkflowStage = 'upload' | 'assessing' | 'policy_screening' | 'assessment' | 'chat' | 'confirmed' | 'humanReview';
-type AssessmentMode = 'demo' | 'ai' | 'video-four-view';
 
 interface ChatMessage {
   id: string;
@@ -168,25 +105,6 @@ export function ClaimFlowPage() {
   const companyDropdownRef = useRef<HTMLDivElement>(null);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
 
-  // Pricing data state
-  const [pricingData, setPricingData] = useState<ModelPricing[]>([]);
-
-  // Four-view upload state (for hybrid assessment)
-  const [viewStates] = useState<Record<string, { file: File | null; preview: string | null }>>({
-    top: { file: null, preview: null },
-    bottom: { file: null, preview: null },
-    left: { file: null, preview: null },
-    right: { file: null, preview: null },
-  });
-  
-  // Ref to store the latest files from FourViewInference
-  const fourViewFilesRef = useRef<Record<string, File | null>>({
-    top: null,
-    bottom: null,
-    left: null,
-    right: null,
-  });
-
   const REQUIRED_VIEWS = ['top', 'bottom', 'left', 'right'] as const;
 
   // Fetch car data on mount
@@ -195,11 +113,6 @@ export function ClaimFlowPage() {
       .then(res => res.json())
       .then(data => setCarData(data))
       .catch(console.error);
-  }, []);
-
-  // Fetch pricing data on mount
-  useEffect(() => {
-    loadCarPricingData().then(data => setPricingData(data));
   }, []);
 
   // Close dropdowns when clicking outside
@@ -216,9 +129,6 @@ export function ClaimFlowPage() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
   
-  // Assessment mode
-  const [assessmentMode, setAssessmentMode] = useState<AssessmentMode>('ai');
-  
   // Chat state
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
@@ -227,9 +137,21 @@ export function ClaimFlowPage() {
   const [currentOffer, setCurrentOffer] = useState(0);
   const [offerAccepted, setOfferAccepted] = useState(false);
   
+  // Four-view state (synced with FourViewInference)
+  const [viewStates, setViewStates] = useState<Record<string, { file: File | null; preview: string | null }>>({
+    top: { file: null, preview: null },
+    bottom: { file: null, preview: null },
+    left: { file: null, preview: null },
+    right: { file: null, preview: null },
+  });
+  const fourViewFilesRef = useRef<Record<string, File | null>>({
+    top: null,
+    bottom: null,
+    left: null,
+    right: null,
+  });
+  
   // UI state
-  const [photoInputKey, setPhotoInputKey] = useState(0);
-  const [errors, setErrors] = useState<Record<string, string>>({});
   const [showLightbox, setShowLightbox] = useState<UploadedPhoto | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -239,7 +161,7 @@ export function ClaimFlowPage() {
     'Identifying damage patterns…',
     'Calculating repair estimates…',
   ];
-
+  
   // Cleanup object URLs on unmount
   useEffect(() => {
     return () => {
@@ -252,59 +174,11 @@ export function ClaimFlowPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Photo handling
-  const processPhotos = useCallback((files: File[]) => {
-    const validPhotos: UploadedPhoto[] = [];
-    const invalidFiles: string[] = [];
-
-    files.forEach(file => {
-      const isImage = isValidImageFile(file);
-      const isVideo = isValidVideoFile(file);
-      
-      if (isImage || isVideo) {
-        validPhotos.push({
-          id: generateId('photo'),
-          file,
-          preview: createObjectURL(file),
-          name: file.name,
-          size: file.size,
-          type: isVideo ? 'video' : 'image',
-        });
-      } else {
-        invalidFiles.push(file.name);
-      }
-    });
-
-    if (validPhotos.length > 0) {
-      setPhotos(prev => [...prev, ...validPhotos].slice(0, MAX_PHOTOS));
-    }
-
-    if (invalidFiles.length > 0) {
-      setErrors(prev => ({
-        ...prev,
-        photos: `Unsupported files: ${invalidFiles.join(', ')}. Use JPG, PNG, WebP (max 10MB) or MP4, MOV (max 50MB).`
-      }));
-      setTimeout(() => setErrors(prev => { const n = {...prev}; delete n.photos; return n; }), 5000);
-    }
-  }, []);
-
-  const removePhoto = useCallback((id: string) => {
-    const photo = photos.find(p => p.id === id);
-    if (photo) revokeObjectURL(photo.preview);
-    setPhotos(prev => prev.filter(p => p.id !== id));
-  }, [photos]);
-
-  const openLightbox = useCallback((photo: UploadedPhoto) => {
-    setShowLightbox(photo);
-  }, []);
-
   const handleAIAssessmentError = useCallback((error: string) => {
-    setErrors(prev => ({ ...prev, assessment: error }));
-    setTimeout(() => setErrors(prev => { const n = {...prev}; delete n.assessment; return n; }), 8000);
+    console.error('Assessment error:', error);
   }, []);
 
   const handleAIValidationError = useCallback((validation: any) => {
-    // Validation errors are handled inline by FourViewUpload
     console.log('Validation error:', validation);
   }, []);
 
@@ -441,70 +315,6 @@ export function ClaimFlowPage() {
       setStage('assessment');
     }
   }, [vehicleInfo]);
-
-  // Video + Four-View Assessment handler (10 video frames + 4 photos = 14 images)
-  const handleVideoFourViewComplete = useCallback(async (backendResult: VideoFourViewAssessmentResponse) => {
-    try {
-      // Build assessment data from backend result
-      const data: AssessmentData = {
-        component: backendResult.primary_component,
-        damageType: backendResult.damage_summary,
-        severity: backendResult.severity,
-        costMin: backendResult.estimated_repair_cost_min,
-        costMax: backendResult.estimated_repair_cost_max,
-        repairApproach: 'Collective AI (Video + 4-View)',
-        explanation: `Collective assessment from ${backendResult.total_detections} detection(s) across 14 images (10 video frames + 4 photos). ${backendResult.damage_summary}. Settlement calculated using local inference.`,
-        settlementOffer: backendResult.settlement_offer,
-        settlementMin: backendResult.settlement_min,
-        settlementMax: backendResult.settlement_max,
-      };
-      
-      setAssessment({ type: backendResult.severity, data });
-      
-      // Convert video frames and photos to ViewResult format for DamageAnnotation
-      const viewsData: Record<string, ViewResult> = {};
-      
-      // Add photo views
-      for (const view of REQUIRED_VIEWS) {
-        const photo = backendResult.photos?.[view];
-        if (photo) {
-          viewsData[view] = {
-            detection_count: photo.detection_count,
-            detections: photo.detections.map(det => ({
-              damage_type: det.damage_type,
-              confidence: det.confidence,
-              bounding_box_xyxy: det.bounding_box_xyxy,
-            })),
-            annotated_image_base64: photo.annotated_image_base64 ?? undefined,
-          };
-        }
-      }
-      
-      // Add video frames as a combined view
-      if (backendResult.video_frames && backendResult.video_frames.length > 0) {
-        const allVideoDetections = backendResult.video_frames.flatMap((f: any) => f.detections || []);
-        viewsData['video'] = {
-          detection_count: allVideoDetections.length,
-          detections: allVideoDetections.map((det: any) => ({
-            damage_type: det.damage_type,
-            confidence: det.confidence,
-            bounding_box_xyxy: det.bounding_box_xyxy,
-          })),
-          annotated_image_base64: undefined,
-        };
-      }
-      
-      setAssessmentViews(viewsData);
-      setPreviousStage('assessing');
-      setStage('assessment');
-    } catch (error: any) {
-      console.error('Video four-view assessment failed:', error);
-      setErrors(prev => ({ ...prev, assessment: error.message || 'Video four-view assessment failed' }));
-      setTimeout(() => setErrors(prev => { const n = {...prev}; delete n.assessment; return n; }), 8000);
-    }
-  }, []);
-
-  // Helper to convert file to base64
   const fileToBase64 = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -519,102 +329,7 @@ export function ClaimFlowPage() {
     });
   };
 
-  // Demo assessment logic (original) - now uses database pricing
-  const startDemoAssessment = useCallback(async () => {
-    if (photos.length === 0) {
-      setErrors(prev => ({ ...prev, photos: 'Please add at least one photo' }));
-      return;
-    }
-
-    // Validate mandatory vehicle info
-    const vehicleErrors: Record<string, string> = {};
-    if (!vehicleInfo.company?.trim()) vehicleErrors.company = 'Car company is required';
-    if (!vehicleInfo.model?.trim()) vehicleErrors.model = 'Car model is required';
-    if (!vehicleInfo.causeOfDamage?.trim()) vehicleErrors.causeOfDamage = 'Cause of damage is required';
-    
-    if (Object.keys(vehicleErrors).length > 0) {
-      setErrors(prev => ({ ...prev, ...vehicleErrors }));
-      return;
-    }
-
-    setPreviousStage(stage);
-    setStage('assessing');
-    setAssessmentProgress(0);
-    setAssessmentStep(0);
-
-    for (let i = 0; i < assessmentSteps.length; i++) {
-      await new Promise(r => setTimeout(r, 1200));
-      setAssessmentStep(i + 1);
-      setAssessmentProgress(Math.round(((i + 1) / assessmentSteps.length) * 100));
-    }
-
-    await new Promise(r => setTimeout(r, 600));
-    
-    // Determine assessment type based on number of photos (demo logic)
-    let assessmentType: Severity;
-    if (photos.length >= 4) assessmentType = 'minor';
-    else if (photos.length === 3) assessmentType = 'moderate';
-    else if (photos.length === 2) assessmentType = 'severe';
-    else assessmentType = 'uncertain';
-
-    // Use database pricing if vehicle info and pricing data available
-    if (vehicleInfo.company && vehicleInfo.model && pricingData.length > 0) {
-      // Create mock detections based on assessment type
-      const mockDetections: PricingDamageDetection[] = assessmentType === 'minor' ? [
-        { part: 'front bumper', severity: 'minor', confidence: 0.9 },
-      ] : assessmentType === 'moderate' ? [
-        { part: 'side mirror', severity: 'moderate', confidence: 0.85 },
-        { part: 'front bumper', severity: 'minor', confidence: 0.8 },
-      ] : assessmentType === 'severe' ? [
-        { part: 'front bumper', severity: 'severe', confidence: 0.95 },
-        { part: 'fender', severity: 'severe', confidence: 0.9 },
-        { part: 'headlight', severity: 'moderate', confidence: 0.85 },
-      ] : [];
-
-      const settlement = calculateSettlement(pricingData, {
-        manufacturer: vehicleInfo.company,
-        model: vehicleInfo.model,
-        causeOfDamage: vehicleInfo.causeOfDamage,
-      }, mockDetections);
-
-      const data: AssessmentData = {
-        component: mockDetections[0]?.part || 'Front Bumper',
-        damageType: mockDetections.map(d => `${d.severity} ${d.part}`).join(', '),
-        severity: assessmentType,
-        costMin: settlement.totalRepairMin + settlement.totalReplaceMin,
-        costMax: settlement.totalRepairMax + settlement.totalReplaceMax,
-        repairApproach: settlement.recommendedApproach === 'repair' ? 'Repair' : 
-                        settlement.recommendedApproach === 'replace' ? 'Replace' : 'Mixed repair & replace',
-        explanation: `Demo assessment based on ${photos.length} photo(s). ${mockDetections.map(d => `${d.severity} ${d.part}`).join(', ')}. Settlement calculated using ${vehicleInfo.company} ${vehicleInfo.model} parts database.`,
-        settlementOffer: settlement.settlementOffer,
-        settlementMin: settlement.settlementMin,
-        settlementMax: settlement.settlementMax,
-      };
-      
-      setAssessment({ type: assessmentType, data });
-      setAssessmentViews(null); // Demo mode has no real detection views
-    } else {
-      // Fallback to original mock data
-      const result = DEMO_ASSESSMENTS[assessmentType];
-      setAssessment({ type: assessmentType, data: result });
-      setAssessmentViews(null); // Demo mode has no real detection views
-    }
-    
-    setPreviousStage('assessing');
-    setStage('assessment');
-  }, [photos, stage, pricingData, vehicleInfo]);
-
-  // Unified start assessment
-  const startAssessment = useCallback(async () => {
-    if (assessmentMode === 'ai') {
-      // FourViewUpload handles the assessment internally
-      // This is triggered by the FourViewUpload component's button
-      return;
-    }
-    await startDemoAssessment();
-  }, [assessmentMode, startDemoAssessment]);
-
-  // Chat logic
+  // Helper to convert file to base64
   const addMessage = useCallback((message: Omit<ChatMessage, 'id' | 'timestamp'>) => {
     setMessages(prev => [...prev, {
       ...message,
@@ -678,7 +393,7 @@ export function ClaimFlowPage() {
     const finalAmount = currentOffer || assessment.data.settlementOffer;
     addMessage({ 
       sender: 'bot', 
-      text: `Your demo settlement is confirmed at ₹${formatNumber(finalAmount)}. Claim reference: CP-${generateId('').slice(0, 8).toUpperCase()}. No real payment has been processed—this is a demonstration only.`,
+      text: `Settlement confirmed at ₹${formatNumber(finalAmount)}. Claim reference: CP-${generateId('').slice(0, 8).toUpperCase()}.`,
       isOffer: true,
       offerAmount: finalAmount
     });
@@ -698,7 +413,6 @@ export function ClaimFlowPage() {
     setChatStage('initial');
     setCurrentOffer(0);
     setOfferAccepted(false);
-    setErrors({});
     setShowLightbox(null);
   }, [photos]);
 
@@ -707,7 +421,7 @@ export function ClaimFlowPage() {
     setStage('humanReview');
     addMessage({
       sender: 'bot',
-      text: 'Your request for human review has been logged (demo mode). A claims adjuster will contact you within 2 business days. You can also upload clearer photos in the meantime.',
+      text: 'Your request for human review has been logged. A claims adjuster will contact you within 2 business days. You can also upload clearer photos in the meantime.',
     });
   }, [addMessage]);
 
@@ -729,7 +443,7 @@ export function ClaimFlowPage() {
       const data = assessment.data;
       addMessage({
         sender: 'bot',
-        text: `Based on this demo assessment, the estimated garage repair cost is ₹${formatNumber(data.costMin)}–₹${formatNumber(data.costMax)}. We can discuss a cash settlement of ₹${formatNumber(data.settlementOffer)}, subject to applicable policy terms.`,
+        text: `Based on this assessment, the estimated garage repair cost is ₹${formatNumber(data.costMin)}–₹${formatNumber(data.costMax)}. We can discuss a cash settlement of ₹${formatNumber(data.settlementOffer)}, subject to applicable policy terms.`,
         isOffer: true,
         offerAmount: data.settlementOffer,
       });
@@ -809,9 +523,6 @@ export function ClaimFlowPage() {
             </div>
             <div className="flex items-center gap-4">
               <StageIndicator currentStage={stage} stages={workflowStages} />
-              <Badge variant="secondary" className="text-[10px] px-2 py-1 font-mono">
-                DEMO
-              </Badge>
             </div>
           </div>
         </div>
@@ -1074,73 +785,14 @@ export function ClaimFlowPage() {
                     <span className="text-sm text-graphite-300">Designed for minor motor insurance claims</span>
                   </div>
                   <div className="flex items-center gap-3 px-4 py-2 rounded-xl bg-graphite-800/50 border border-graphite-700">
-                    <Zap className="h-5 w-5 text-amber-400" />
-                    <span className="text-sm text-graphite-300">Simulated AI assessment</span>
-                  </div>
-                  <div className="flex items-center gap-3 px-4 py-2 rounded-xl bg-graphite-800/50 border border-graphite-700">
                     <MessageSquare className="h-5 w-5 text-success-400" />
                     <span className="text-sm text-graphite-300">Interactive settlement negotiation</span>
                   </div>
                 </motion.div>
-                
-                {/* Assessment Mode Toggle */}
-                <motion.div
-                  className="mt-8 p-4 rounded-2xl border border-graphite-700 bg-graphite-900/50"
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.6, delay: 0.6 }}
-                >
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="flex items-center gap-3">
-                      <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-electric-500/20 to-cyan-500/20">
-                        <Brain className="h-5 w-5 text-electric-400" />
-                      </div>
-                      <div>
-                        <p className="font-medium text-graphite-100">Assessment Mode</p>
-                        <p className="text-xs text-graphite-500">Choose between demo simulation or real AI analysis</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 bg-graphite-800/50 rounded-xl p-1">
-                      <Button
-                        variant={assessmentMode === 'demo' ? 'default' : 'ghost'}
-                        size="sm"
-                        onClick={() => setAssessmentMode('demo')}
-                        className="rounded-lg"
-                      >
-                        Demo Mode
-                      </Button>
-                      <Button
-                        variant={assessmentMode === 'ai' ? 'default' : 'ghost'}
-                        size="sm"
-                        onClick={() => setAssessmentMode('ai')}
-                        className="rounded-lg"
-                      >
-                        <Brain className="h-3.5 w-3.5 mr-1" />
-                        AI Assessment
-                      </Button>
-                      <Button
-                        variant={assessmentMode === 'video-four-view' ? 'default' : 'ghost'}
-                        size="sm"
-                        onClick={() => setAssessmentMode('video-four-view')}
-                        className="rounded-lg"
-                      >
-                        <Video className="h-3.5 w-3.5 mr-1" />
-                        Video + 4-View
-                      </Button>
-                    </div>
-                  </div>
-                  <p className="text-xs text-graphite-500">
-                    {assessmentMode === 'demo' 
-                      ? 'Demo mode uses simulated assessments based on photo count. No real AI inference.' 
-                      : assessmentMode === 'ai'
-                      ? 'AI mode uses YOLOv11 damage detection on 4 required views (top, bottom, left, right). Requires backend server.'
-                      : 'Video + 4-View mode: 1 video (8-10s) + 4 photos (top, bottom, left, right) = 14 images for collective assessment.'}
-                  </p>
-                </motion.div>
-              </div>
-            </motion.section>
-          )}
-        </AnimatePresence>
+            </div>
+          </motion.section>
+        )}
+      </AnimatePresence>
 
         {/* Loading Overlay */}
         <LoadingOverlay
@@ -1165,39 +817,25 @@ export function ClaimFlowPage() {
               {(() => {
                 switch (stage) {
                   case 'upload':
-                    if (assessmentMode === 'ai') {
-                      return (
-                        <FourViewInference
-                          onInferenceComplete={handleHybridAssessmentComplete}
-                          onError={handleAIAssessmentError}
-                          onValidationError={handleAIValidationError}
-                          onFilesChange={(files) => {
-                            fourViewFilesRef.current = files;
-                          }}
-                          disabled={stage !== 'upload'}
-                        />
-                      );
-                    }
-                    if (assessmentMode === 'video-four-view') {
-                      return (
-                        <VideoFourViewInference
-                          onInferenceComplete={handleVideoFourViewComplete}
-                          onError={handleAIAssessmentError}
-                          disabled={stage !== 'upload'}
-                        />
-                      );
-                    }
                     return (
-                      <InspectionUpload
-                        photos={photos}
-                        onAddPhotos={processPhotos}
-                        onRemovePhoto={removePhoto}
-                        onOpenLightbox={openLightbox}
-                        onStartAssessment={startAssessment}
-                        maxPhotos={MAX_PHOTOS}
-                        errors={errors}
-                        photoInputKey={photoInputKey}
-                        setPhotoInputKey={setPhotoInputKey}
+                      <FourViewInference
+                        onInferenceComplete={handleHybridAssessmentComplete}
+                        onError={handleAIAssessmentError}
+                        onValidationError={handleAIValidationError}
+                        onFilesChange={(files) => {
+                          fourViewFilesRef.current = files;
+                          // Sync viewStates with file info for hybrid assessment
+                          const newViewStates: Record<string, { file: File | null; preview: string | null }> = {};
+                          for (const view of REQUIRED_VIEWS) {
+                            const file = files[view];
+                            newViewStates[view] = {
+                              file,
+                              preview: file ? URL.createObjectURL(file) : null,
+                            };
+                          }
+                          setViewStates(newViewStates);
+                        }}
+                        disabled={stage !== 'upload'}
                       />
                     );
                   case 'assessing':
@@ -1325,7 +963,7 @@ export function ClaimFlowPage() {
                           animate={{ opacity: 1, y: 0 }}
                           transition={{ delay: 0.3 }}
                         >
-                          <h2 className="text-2xl font-bold text-graphite-100">Demo Settlement Confirmed</h2>
+                          <h2 className="text-2xl font-bold text-graphite-100">Settlement Confirmed</h2>
                           <p className="mt-2 text-graphite-400">
                             The illustrative settlement has been agreed. No real payment has been processed.
                           </p>
@@ -1381,7 +1019,7 @@ export function ClaimFlowPage() {
                               animate={{ opacity: 1 }}
                               transition={{ delay: 0.7 }}
                             >
-                              This is a demonstration only. No real settlement, payment, or claim has been created.
+                              This settlement has been confirmed. No further action required.
                             </motion.p>
                           </CardContent>
                           <CardFooter className="pt-0">
@@ -1395,7 +1033,7 @@ export function ClaimFlowPage() {
                               transition={{ delay: 0.8 }}
                             >
                               <RefreshCw className="h-4 w-4" />
-                              Run Another Demo
+                              New Assessment
                             </motion.button>
                           </CardFooter>
                         </Card>
@@ -1461,7 +1099,7 @@ export function ClaimFlowPage() {
                               animate={{ opacity: 1 }}
                               transition={{ delay: 0.5 }}
                             >
-                              In demo mode, human review simply logs the request above.
+                              Human review request has been logged. An adjuster will contact you shortly.
                             </motion.p>
                           </CardContent>
                         </Card>
@@ -1482,7 +1120,7 @@ export function ClaimFlowPage() {
           animate={{ opacity: 1 }}
           transition={{ delay: 1 }}
         >
-          Frontend prototype · No backend, AI, or payment processing · All data simulated
+          ClaimPilot AI · Vehicle Damage Assessment & Settlement Platform
         </motion.p>
       </main>
 

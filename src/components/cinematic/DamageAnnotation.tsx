@@ -465,7 +465,6 @@ export function DamageAnnotation({ assessment, photos, views, onContinue, onAddM
               >
                 <div className="flex items-center justify-between gap-4 mb-3">
                   <span className="text-xs font-mono text-graphite-400 uppercase tracking-wider">SETTLEMENT RANGE</span>
-                  <span className="text-xs font-mono text-electric-400">DEMO MODE</span>
                 </div>
                 <div className="h-2 bg-graphite-800 rounded-full overflow-hidden relative">
                   <motion.div
@@ -502,17 +501,6 @@ export function DamageAnnotation({ assessment, photos, views, onContinue, onAddM
               </div>
               <p className="text-sm text-graphite-300 leading-relaxed flex-1">{data.explanation}</p>
             </div>
-          </motion.div>
-
-          {/* Demo disclaimer */}
-          <motion.div
-            className="flex items-center gap-2 text-xs text-graphite-500 bg-graphite-900/30 rounded-xl p-3 border border-graphite-700"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.4, delay: 1.1 }}
-          >
-            <Info className="h-4 w-4 flex-shrink-0 text-graphite-500" />
-            <span>Illustrative assessment · Demo mode. Photos are not actually analysed by AI.</span>
           </motion.div>
         </CardContent>
 

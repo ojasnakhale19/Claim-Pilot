@@ -2,7 +2,6 @@ import { useRef, useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Send, Zap, CheckCircle, Plus, Loader2, ChevronUp, ChevronDown } from 'lucide-react';
 import { CardContent, CardFooter } from '../ui/Card';
-import { Badge } from '../ui/Badge';
 import { cn, formatNumber } from '../../lib/utils';
 
 interface ChatMessage {
@@ -88,12 +87,7 @@ export function FuturisticChat({
               {assessment ? `ASSESSMENT: ${assessment.data.component.toUpperCase()} · ${assessment.data.severity.toUpperCase()}` : 'AWAITING ASSESSMENT'}
             </p>
           </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <Badge variant="secondary" className="text-[10px] px-2 py-1 font-mono">
-            DEMO MODE
-          </Badge>
-          <motion.button
+        <motion.button
             onClick={() => setShowOfferDetails(!showOfferDetails)}
             className="p-2 rounded-xl bg-graphite-800/50 border border-graphite-700 text-graphite-400 hover:text-electric-400 hover:border-electric-500/50 transition-all"
             whileHover={{ scale: 1.1 }}
@@ -186,7 +180,7 @@ export function FuturisticChat({
               </div>
               <div>
                 <p className="text-sm font-medium text-success-400">Offer Accepted: ₹{formatNumber(assessment.data.settlementOffer)}</p>
-                <p className="text-xs text-graphite-400 mt-0.5">Confirm below to finalize the demo settlement</p>
+                <p className="text-xs text-graphite-400 mt-0.5">Confirm below to finalize the settlement</p>
               </div>
             </motion.div>
           )}
@@ -267,9 +261,6 @@ export function FuturisticChat({
                   </span>
                   CURRENT OFFER
                 </motion.h4>
-                <Badge variant="primary" className="text-[10px] px-2 py-0.5 font-mono">
-                  DEMO
-                </Badge>
               </div>
 
               <motion.div
@@ -338,7 +329,7 @@ export function FuturisticChat({
                 animate={{ opacity: 1 }}
                 transition={{ delay: 0.5 }}
               >
-                Position within permitted demo range
+                Position within permitted settlement range
               </motion.p>
             </CardContent>
 
