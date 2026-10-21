@@ -10,22 +10,25 @@ import {
   Check,
   X,
   ChevronDown,
+  Video,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   CinematicBackground,
   CSSWheel,
   FourViewInference,
+  VideoFourViewInference,
   DamageAnnotation,
   FuturisticChat,
   TransitionWrapper,
   StageIndicator,
   LoadingOverlay,
 } from '../components/cinematic';
-import { cn, revokeObjectURL, getFileSizeString, generateId, formatNumber, assessFourView, assessHybrid, type DamageDetection, type ViewResult } from '../lib/utils';
+import { cn, revokeObjectURL, getFileSizeString, generateId, formatNumber, assessFourView, assessHybrid, type DamageDetection, type ViewResult, type VideoFourViewAssessmentResponse } from '../lib/utils';
 import { type Detection } from '../lib/yoloInference';
 import { generateAINegotiationResponse } from '../lib/aiService';
 import { Card, CardContent, CardFooter } from '../components/ui/Card';
+import { Button } from '../components/ui/Button';
 import { Progress } from '../components/ui/Progress';
 
 type Severity = 'minor' | 'moderate' | 'severe' | 'uncertain';
@@ -150,8 +153,12 @@ export function ClaimFlowPage() {
     left: null,
     right: null,
   });
-  
+
+  // Video four-view state
+  const [useVideoMode, setUseVideoMode] = useState(false);
+
   // UI state
+  const [, setErrors] = useState<Record<string, string>>({});
   const [showLightbox, setShowLightbox] = useState<UploadedPhoto | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -315,6 +322,69 @@ export function ClaimFlowPage() {
       setStage('assessment');
     }
   }, [vehicleInfo]);
+
+  // Video + Four-View Assessment handler (10 video frames + 4 photos = 14 images)
+  const handleVideoFourViewComplete = useCallback(async (backendResult: VideoFourViewAssessmentResponse) => {
+    try {
+      // Build assessment data from backend result
+      const data: AssessmentData = {
+        component: backendResult.primary_component,
+        damageType: backendResult.damage_summary,
+        severity: backendResult.severity,
+        costMin: backendResult.estimated_repair_cost_min,
+        costMax: backendResult.estimated_repair_cost_max,
+        repairApproach: 'Collective AI (Video + 4-View)',
+        explanation: `Collective assessment from ${backendResult.total_detections} detection(s) across 14 images (10 video frames + 4 photos). ${backendResult.damage_summary}. Settlement calculated using local inference.`,
+        settlementOffer: backendResult.settlement_offer,
+        settlementMin: backendResult.settlement_min,
+        settlementMax: backendResult.settlement_max,
+      };
+      
+      setAssessment({ type: backendResult.severity, data });
+      
+      // Convert video frames and photos to ViewResult format for DamageAnnotation
+      const viewsData: Record<string, ViewResult> = {};
+      
+      // Add photo views
+      for (const view of REQUIRED_VIEWS) {
+        const photo = backendResult.photos?.[view];
+        if (photo) {
+          viewsData[view] = {
+            detection_count: photo.detection_count,
+            detections: photo.detections.map(det => ({
+              damage_type: det.damage_type,
+              confidence: det.confidence,
+              bounding_box_xyxy: det.bounding_box_xyxy,
+            })),
+            annotated_image_base64: photo.annotated_image_base64 ?? undefined,
+          };
+        }
+      }
+      
+      // Add video frames as a combined view
+      if (backendResult.video_frames && backendResult.video_frames.length > 0) {
+        const allVideoDetections = backendResult.video_frames.flatMap((f: any) => f.detections || []);
+        viewsData['video'] = {
+          detection_count: allVideoDetections.length,
+          detections: allVideoDetections.map((det: any) => ({
+            damage_type: det.damage_type,
+            confidence: det.confidence,
+            bounding_box_xyxy: det.bounding_box_xyxy,
+          })),
+          annotated_image_base64: undefined,
+        };
+      }
+      
+      setAssessmentViews(viewsData);
+      setPreviousStage('assessing');
+      setStage('assessment');
+    } catch (error: any) {
+      console.error('Video four-view assessment failed:', error);
+      setErrors(prev => ({ ...prev, assessment: error.message || 'Video four-view assessment failed' }));
+      setTimeout(() => setErrors(prev => { const n = {...prev}; delete n.assessment; return n; }), 8000);
+    }
+  }, [setErrors]);
+
   const fileToBase64 = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -818,25 +888,56 @@ export function ClaimFlowPage() {
                 switch (stage) {
                   case 'upload':
                     return (
-                      <FourViewInference
-                        onInferenceComplete={handleHybridAssessmentComplete}
-                        onError={handleAIAssessmentError}
-                        onValidationError={handleAIValidationError}
-                        onFilesChange={(files) => {
-                          fourViewFilesRef.current = files;
-                          // Sync viewStates with file info for hybrid assessment
-                          const newViewStates: Record<string, { file: File | null; preview: string | null }> = {};
-                          for (const view of REQUIRED_VIEWS) {
-                            const file = files[view];
-                            newViewStates[view] = {
-                              file,
-                              preview: file ? URL.createObjectURL(file) : null,
-                            };
-                          }
-                          setViewStates(newViewStates);
-                        }}
-                        disabled={stage !== 'upload'}
-                      />
+                      <div className="space-y-6">
+                        {/* Mode toggle */}
+                        <div className="flex items-center justify-center gap-4 mb-6">
+                          <Button
+                            variant={useVideoMode ? 'default' : 'ghost'}
+                            size="sm"
+                            onClick={() => setUseVideoMode(true)}
+                            className="rounded-lg touch-target-comfortable"
+                          >
+                            <Video className="h-4 w-4 mr-1" />
+                            Video + 4-View
+                          </Button>
+                          <Button
+                            variant={useVideoMode ? 'ghost' : 'default'}
+                            size="sm"
+                            onClick={() => setUseVideoMode(false)}
+                            className="rounded-lg touch-target-comfortable"
+                          >
+                            <Camera className="h-4 w-4 mr-1" />
+                            4 Photos Only
+                          </Button>
+                        </div>
+                        {useVideoMode ? (
+                          <VideoFourViewInference
+                            onInferenceComplete={handleVideoFourViewComplete}
+                            onError={handleAIAssessmentError}
+                            disabled={stage !== 'upload'}
+                          />
+                        ) : (
+                          <FourViewInference
+                            onInferenceComplete={handleHybridAssessmentComplete}
+                            onError={handleAIAssessmentError}
+                            onValidationError={handleAIValidationError}
+                            onFilesChange={(files) => {
+                              fourViewFilesRef.current = files;
+                              // Sync viewStates with file info for hybrid assessment
+                              const newViewStates: Record<string, { file: File | null; preview: string | null }> = {};
+                              for (const view of REQUIRED_VIEWS) {
+                                const file = files[view];
+                                newViewStates[view] = {
+                                  file,
+                                  preview: file ? URL.createObjectURL(file) : null,
+                                };
+                              }
+                              setViewStates(newViewStates);
+                            }}
+                            disabled={stage !== 'upload'}
+                          />
+                        )}
+                      </div>
                     );
                   case 'assessing':
                     return (
