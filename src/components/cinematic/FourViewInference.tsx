@@ -780,12 +780,12 @@ export function FourViewInference({
                           </div>
                         )}
                       </div>
-                      <div className="p-3 space-y-2 max-h-40 overflow-y-auto">
+                      <div className="p-3 space-y-2 max-h-40 overflow-y-auto text-center">
                         {detections.length === 0 ? (
                           <p className="text-sm text-graphite-500">No damage detected</p>
                         ) : (
                           detections.map((det, i) => (
-                            <div key={i} className="flex items-center justify-between text-sm p-2 rounded bg-graphite-800/50">
+                            <div key={i} className="flex items-center justify-center gap-2 text-sm p-2 rounded bg-graphite-800/50">
                               <span className="text-graphite-300">{formatDamageType(det.className)}</span>
                               <span className="font-mono text-electric-400">{(det.confidence * 100).toFixed(1)}%</span>
                             </div>

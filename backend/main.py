@@ -1360,10 +1360,35 @@ async def assess_video_four_view(
     all_detections = video_detections + photo_detections
     total_detections = len(all_detections)
     
+    # ─── Deduplicate Detections Across Views/Frames ───────────────────────────
+    # Since same physical damage appears in multiple frames/views, we need to 
+    # deduplicate by clustering nearby detections of the same type
+    def deduplicate_detections(detections, iou_threshold=0.3):
+        """Merge detections that likely represent the same physical damage."""
+        if not detections:
+            return []
+        
+        # Group by damage type
+        from collections import defaultdict
+        by_type = defaultdict(list)
+        for d in detections:
+            by_type[d["damage_type"]].append(d)
+        
+        unique_detections = []
+        for damage_type, dets in by_type.items():
+            # Simple deduplication: keep highest confidence detection per type
+            # In production, could use IoU-based clustering across views
+            best = max(dets, key=lambda x: x["confidence"])
+            unique_detections.append(best)
+        
+        return unique_detections
+    
+    unique_detections = deduplicate_detections(all_detections)
+    
     # ─── Estimate Costs (reuse existing logic) ───────────────────────────────
     # Normalize damage types
     normalized_detections = []
-    for d in all_detections:
+    for d in unique_detections:
         normalized_detections.append({
             "damage_type": normalize_damage_type(d["damage_type"]),
             "confidence": d["confidence"]
@@ -1403,7 +1428,7 @@ async def assess_video_four_view(
         }
         primary_component = component_map.get(primary_damage, "Vehicle Component")
         unique_types = list(set(d["damage_type"] for d in normalized_detections))
-        summary = f"Video+4-View: {total_count} detections from 14 images. Types: {', '.join(unique_types)}. Primary: {primary_damage} ({severity})."
+        summary = f"Video+4-View: {total_count} unique damage instance(s) (from {len(all_detections)} raw detections across 14 images). Types: {', '.join(unique_types)}. Primary: {primary_damage} ({severity})."
     else:
         severity = "uncertain"
         min_cost = 0

@@ -526,6 +526,17 @@ export function ClaimFlowPage() {
       return;
     }
 
+    // Validate mandatory vehicle info
+    const vehicleErrors: Record<string, string> = {};
+    if (!vehicleInfo.company?.trim()) vehicleErrors.company = 'Car company is required';
+    if (!vehicleInfo.model?.trim()) vehicleErrors.model = 'Car model is required';
+    if (!vehicleInfo.causeOfDamage?.trim()) vehicleErrors.causeOfDamage = 'Cause of damage is required';
+    
+    if (Object.keys(vehicleErrors).length > 0) {
+      setErrors(prev => ({ ...prev, ...vehicleErrors }));
+      return;
+    }
+
     setPreviousStage(stage);
     setStage('assessing');
     setAssessmentProgress(0);

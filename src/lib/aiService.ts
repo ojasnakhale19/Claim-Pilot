@@ -121,13 +121,18 @@ Current Offer: ₹${req.settlementOffer.toLocaleString('en-IN')}.
 
 Guidelines:
 1. Always maintain a polite, transparent, and empathetic tone.
-2. If the user asks for more money:
+2. Use the vehicle make/model and cause of damage to inform your reasoning:
+   - Luxury/premium models may have higher parts costs
+   - Certain causes (e.g., flood, fire) may trigger policy exclusions or escalation
+   - Cause of damage affects liability and coverage determination
+3. If the user asks for more money:
    - If they specify an amount <= ₹${req.settlementMax}, consider granting or counter-offering close to it.
    - If they specify an amount > ₹${req.settlementMax}, explain politely that insurance guidelines limit the maximum cash buyout to ₹${req.settlementMax.toLocaleString('en-IN')}, and offer that maximum.
    - If they just say "more" or "increase", offer an increment (e.g. +₹500 to +₹1,000) capped at ₹${req.settlementMax}.
-3. If they ask why the cash offer is lower than repair cost: explain standard insurer settlement formulas (deductibles, retail labor vs negotiated rates, depreciation).
-4. If they accept or agree: confirm clearly and prompt them to finalize.
-5. Always keep replies concise (under 3 sentences).`;
+4. If they ask why the cash offer is lower than repair cost: explain standard insurer settlement formulas (deductibles, retail labor vs negotiated rates, depreciation).
+5. If they accept or agree: confirm clearly and prompt them to finalize.
+6. If cause of damage suggests policy exclusion (e.g., wear and tear, intentional damage, racing), recommend escalation to human review.
+7. Always keep replies concise (under 3 sentences).`;
 
   if (provider === 'gemini' && apiKey) {
     try {
@@ -189,21 +194,37 @@ function getLocalIntelligentResponse(req: AIAnalysisRequest): AIAnalysisResponse
   const text = (req.userMessage || '').toLowerCase();
   const max = req.settlementMax;
   const current = req.settlementOffer;
+  const vehicleModel = req.vehicle.model || 'Vehicle';
+  const vehicleCompany = req.vehicle.company || 'Unknown';
+  const causeOfDamage = req.vehicle.causeOfDamage || 'Accident';
+  
+  // Check for exclusionary causes
+  const exclusionaryCauses = ['wear', 'tear', 'rust', 'corrosion', 'mechanical failure', 'electrical fault', 'intentional', 'racing', 'drunk', 'dui', 'under influence'];
+  const isExclusionary = exclusionaryCauses.some(c => causeOfDamage.toLowerCase().includes(c));
   
   // Extract custom numbers
   const numMatch = text.match(/[₹$]?\s?(\d[\d,]*)/);
   const userNum = numMatch ? parseInt(numMatch[1].replace(/,/g, ''), 10) : null;
 
   if (text.includes('more') || text.includes('higher') || text.includes('increase') || text.includes('counter')) {
+    // Check for exclusionary cause
+    if (isExclusionary) {
+      return {
+        message: `Based on the reported cause (${causeOfDamage}), this may require human review for policy coverage determination. I recommend escalating to a claims adjuster for further assessment.`,
+        isOffer: false,
+        recommendation: 'escalate',
+      };
+    }
+    
     if (userNum && userNum <= max) {
       return {
-        message: `Based on your vehicle damage assessment, we can adjust the settlement offer to ₹${userNum.toLocaleString('en-IN')}. Would this amount be acceptable to proceed?`,
+        message: `Based on your ${vehicleCompany} ${vehicleModel} damage assessment, we can adjust the settlement offer to ₹${userNum.toLocaleString('en-IN')}. Would this amount be acceptable to proceed?`,
         newOffer: userNum,
         isOffer: true,
       };
     } else if (userNum && userNum > max) {
       return {
-        message: `While we understand your request for ₹${userNum.toLocaleString('en-IN')}, our automated policy guidelines cap this component's instant payout at ₹${max.toLocaleString('en-IN')}. We can finalize at ₹${max.toLocaleString('en-IN')}.`,
+        message: `While we understand your request for ₹${userNum.toLocaleString('en-IN')}, our automated policy guidelines for this ${vehicleModel} cap the instant payout at ₹${max.toLocaleString('en-IN')}. We can finalize at ₹${max.toLocaleString('en-IN')}.`,
         newOffer: max,
         isOffer: true,
       };
@@ -219,7 +240,7 @@ function getLocalIntelligentResponse(req: AIAnalysisRequest): AIAnalysisResponse
 
   if (text.includes('why') || text.includes('lower') || text.includes('difference') || text.includes('explain')) {
     return {
-      message: `The instant cash settlement (₹${current.toLocaleString('en-IN')}) provides immediate payout without garage bills or deductible delays. It factors standard parts depreciation and insurer-authorized volume labor rates rather than retail walk-in quotes.`,
+      message: `The instant cash settlement (₹${current.toLocaleString('en-IN')}) for your ${vehicleCompany} ${vehicleModel} provides immediate payout without garage bills or deductible delays. It factors standard parts depreciation and insurer-authorized volume labor rates rather than retail walk-in quotes.`,
       isOffer: false,
     };
   }
@@ -229,21 +250,21 @@ function getLocalIntelligentResponse(req: AIAnalysisRequest): AIAnalysisResponse
     const labor = Math.round(req.costMin * 0.35);
     const paint = req.costMin - parts - labor;
     return {
-      message: `Estimated Assessment Breakdown:\n• Replacement / Parts: ₹${parts.toLocaleString('en-IN')}\n• Certified Labor: ₹${labor.toLocaleString('en-IN')}\n• Paint & Finishing: ₹${paint.toLocaleString('en-IN')}\nCash settlement reflects net payable after deductible exclusions.`,
+      message: `Estimated Assessment Breakdown for ${vehicleCompany} ${vehicleModel}:\n• Replacement / Parts: ₹${parts.toLocaleString('en-IN')}\n• Certified Labor: ₹${labor.toLocaleString('en-IN')}\n• Paint & Finishing: ₹${paint.toLocaleString('en-IN')}\nCash settlement reflects net payable after deductible exclusions.`,
       isOffer: false,
     };
   }
 
   if (text.includes('accept') || text.includes('agree') || text.includes('yes') || text.includes('ok') || text.includes('confirm')) {
     return {
-      message: `Excellent! The settlement of ₹${current.toLocaleString('en-IN')} has been accepted. Please click 'Finalize Settlement' below to generate your claim confirmation.`,
+      message: `Excellent! The settlement of ₹${current.toLocaleString('en-IN')} for your ${vehicleCompany} ${vehicleModel} has been accepted. Please click 'Finalize Settlement' below to generate your claim confirmation.`,
       newOffer: current,
       isOffer: true,
     };
   }
 
   return {
-    message: `Thank you for your update. The current settlement offer stands at ₹${current.toLocaleString('en-IN')} (authorized range: ₹${req.settlementMin.toLocaleString('en-IN')} - ₹${max.toLocaleString('en-IN')}). You can request a higher amount, ask for a cost breakdown, or accept this offer.`,
+    message: `Thank you for your update. The current settlement offer for your ${vehicleCompany} ${vehicleModel} stands at ₹${current.toLocaleString('en-IN')} (authorized range: ₹${req.settlementMin.toLocaleString('en-IN')} - ₹${max.toLocaleString('en-IN')}). You can request a higher amount, ask for a cost breakdown, or accept this offer.`,
     isOffer: false,
   };
 }
