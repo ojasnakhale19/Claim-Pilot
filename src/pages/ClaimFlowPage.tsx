@@ -943,17 +943,17 @@ export function ClaimFlowPage() {
       {/* Header */}
       <header className="sticky top-0 z-40 w-full border-b border-graphite-800 bg-background/90 backdrop-blur-xl supports-[backdrop-filter]:bg-background/80">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex h-16 items-center justify-between">
-            <div className="flex items-center gap-3">
+          <div className="flex h-20 sm:h-24 items-center justify-between">
+            <div className="flex items-center gap-4">
               <motion.div
-                className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-electric-500 to-cyan-500"
+                className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-electric-500 to-cyan-500"
                 initial={{ scale: 0, rotate: -180 }}
                 animate={{ scale: 1, rotate: 0 }}
                 transition={{ duration: 0.6, delay: 0.1, ease: [0.34, 1.56, 0.64, 1] }}
               >
                 <Zap className="h-5 w-5 text-background" aria-hidden="true" />
               </motion.div>
-              <span className="font-bold text-xl text-graphite-100 tracking-tight">ClaimPilot</span>
+              <span className="font-bold text-xl sm:text-2xl text-graphite-100 tracking-tight">ClaimPilot</span>
             </div>
             <div className="flex items-center gap-4">
               <StageIndicator currentStage={stage} stages={workflowStages} />
