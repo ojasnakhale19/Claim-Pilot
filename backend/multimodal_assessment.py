@@ -432,9 +432,18 @@ def estimate_collective_costs(detections: List[DamageDetection]) -> tuple[int, i
     cost_map = DAMAGE_COST_MAP.get(primary_damage, DAMAGE_COST_MAP["damage"])
     min_cost, max_cost = cost_map.get(severity, cost_map["minor"])
     
-    if total_count > 1:
-        min_cost = int(min_cost * (1 + 0.3 * (total_count - 1)))
-        max_cost = int(max_cost * (1 + 0.3 * (total_count - 1)))
+    # Use unique damage types for cost multiplier (not total detections)
+    unique_types = list(set(all_damage_types))
+    unique_count = len(unique_types)
+    
+    if unique_count > 1:
+        # Each additional unique damage type adds 30% to cost
+        min_cost = int(min_cost * (1 + 0.3 * (unique_count - 1)))
+        max_cost = int(max_cost * (1 + 0.3 * (unique_count - 1)))
+    elif total_count > 1:
+        # Multiple detections of same type: smaller multiplier (10% per additional)
+        min_cost = int(min_cost * (1 + 0.1 * (total_count - 1)))
+        max_cost = int(max_cost * (1 + 0.1 * (total_count - 1)))
     
     component_map = {
         "dent": "Body Panel",

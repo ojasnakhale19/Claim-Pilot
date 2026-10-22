@@ -204,48 +204,63 @@ export function FourViewInference({
     const allDetections = Object.values(viewResults).flatMap(v => v.detections);
     const totalDetections = allDetections.length;
 
-    // Determine primary component (most confident detection)
-    const primaryDetection = allDetections.reduce((max, d) => 
-      d.confidence > max.confidence ? d : max, allDetections[0]
-    );
-    const primaryComponent = primaryDetection ? formatDamageType(primaryDetection.className) : 'Unknown';
-
     // Count detections by class (using formatted names)
-    const detectionCounts: Record<string, number> = {};
+    const detectionCounts: Record<string, { count: number; maxConfidence: number }> = {};
     allDetections.forEach(d => {
       const formattedName = formatDamageType(d.className);
-      detectionCounts[formattedName] = (detectionCounts[formattedName] || 0) + 1;
+      if (!detectionCounts[formattedName] || d.confidence > detectionCounts[formattedName].maxConfidence) {
+        detectionCounts[formattedName] = { count: 1, maxConfidence: d.confidence };
+      } else {
+        detectionCounts[formattedName].count += 1;
+      }
     });
 
-    // Create damage summary
+    // Determine primary component (highest confidence damage type)
+    const primaryComponentEntry = Object.entries(detectionCounts).reduce(
+      (max, [type, data]) => data.maxConfidence > max[1].maxConfidence ? [type, data] : max,
+      ['Unknown', { count: 0, maxConfidence: 0 }]
+    );
+    const primaryComponent = primaryComponentEntry[0];
+
+    // Create damage summary with counts
     const damageSummary = Object.entries(detectionCounts)
-      .map(([type, count]) => `${count} ${type}${count > 1 ? 's' : ''}`)
+      .map(([type, data]) => `${data.count} ${type}${data.count > 1 ? 's' : ''}`)
       .join(', ') || 'No damage detected';
 
-    // Determine severity based on highest confidence detection
-    // Map confidence to severity: high confidence -> severe, medium -> moderate, low -> minor
+    // Determine severity based on total detections AND max confidence
     const maxConfidence = allDetections.reduce((max, d) => d.confidence > max.confidence ? d : max, allDetections[0])?.confidence || 0;
+    const uniqueDamageTypes = Object.keys(detectionCounts).length;
+    
     let severity: 'minor' | 'moderate' | 'severe' | 'uncertain' = 'uncertain';
-    if (maxConfidence >= 0.7) severity = 'severe';
-    else if (maxConfidence >= 0.5) severity = 'moderate';
-    else if (maxConfidence >= 0.3) severity = 'minor';
-    else severity = 'uncertain';
+    if (totalDetections === 0) {
+      severity = 'uncertain';
+    } else if (maxConfidence >= 0.7 && (totalDetections >= 3 || uniqueDamageTypes >= 2)) {
+      severity = 'severe';
+    } else if (maxConfidence >= 0.5 || (totalDetections >= 2 && maxConfidence >= 0.4)) {
+      severity = 'moderate';
+    } else {
+      severity = 'minor';
+    }
 
-    // Calculate costs using simple estimation based on severity
+    // Calculate costs based on severity and unique damage types (not per detection)
+    // Base cost per severity tier
     type SeverityKey = 'minor' | 'moderate' | 'severe' | 'uncertain';
-    const costPerDetection: Record<SeverityKey, { min: number; max: number }> = {
+    const baseCost: Record<SeverityKey, { min: number; max: number }> = {
       minor: { min: 3000, max: 8000 },
       moderate: { min: 8000, max: 20000 },
       severe: { min: 20000, max: 50000 },
       uncertain: { min: 5000, max: 15000 },
     };
 
-    let totalMin = 0, totalMax = 0;
-    allDetections.forEach(_d => {
-      const cost = costPerDetection[severity] || { min: 5000, max: 15000 };
-      totalMin += cost.min;
-      totalMax += cost.max;
-    });
+    // Multiplier based on number of unique damage types (1x, 1.5x, 2x, 2.5x)
+    const typeMultiplier = Math.min(1 + (uniqueDamageTypes - 1) * 0.5, 2.5);
+    
+    // Additional factor for high detection count in same type (max 1.5x)
+    const detectionFactor = Math.min(1 + (totalDetections - uniqueDamageTypes) * 0.1, 1.5);
+
+    const cost = baseCost[severity] || { min: 5000, max: 15000 };
+    const totalMin = Math.round(cost.min * typeMultiplier * detectionFactor);
+    const totalMax = Math.round(cost.max * typeMultiplier * detectionFactor);
 
     // Settlement calculation (75% of repair cost)
     const settlementOffer = Math.round((totalMin + totalMax) / 2 * 0.75);
@@ -257,8 +272,8 @@ export function FourViewInference({
     if (totalDetections === 0) {
       reviewFlags.push({ code: 'NO_DETECTIONS', view: 'all', message: 'No damage detected in any view' });
     }
-    if (totalDetections > 10) {
-      reviewFlags.push({ code: 'HIGH_DETECTION_COUNT', view: 'all', message: 'Unusually high number of detections' });
+    if (totalDetections > 15) {
+      reviewFlags.push({ code: 'HIGH_DETECTION_COUNT', view: 'all', message: 'Unusually high number of detections - verify image quality' });
     }
     if (Object.values(viewStates).some(v => !v.file)) {
       reviewFlags.push({ code: 'INCOMPLETE_VIEWS', view: 'all', message: 'Not all required views uploaded' });
@@ -827,9 +842,9 @@ export function FourViewInference({
               </Button>
               <Button
                 onClick={() => {
-                  // Navigate to settlement
+                  // Navigate to settlement - call onInferenceComplete directly
                   const assessment = convertToAssessment(inferenceResults);
-                  window.dispatchEvent(new CustomEvent('claimpilot:assessment-complete', { detail: assessment }));
+                  onInferenceComplete(assessment);
                 }}
                 className="flex-1 gap-2 bg-gradient-to-r from-electric-500 to-cyan-500"
               >
