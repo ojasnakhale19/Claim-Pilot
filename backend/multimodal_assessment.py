@@ -50,6 +50,67 @@ _agent: Optional[DecisionAgent] = None
 _video_processor: Optional[VideoProcessor] = None
 
 
+# ─── IoU and Deduplication Utilities ──────────────────────────────────────
+def calculate_iou(box1, box2):
+    """Calculate IoU between two boxes [x1, y1, x2, y2]."""
+    x1 = max(box1[0], box2[0])
+    y1 = max(box1[1], box2[1])
+    x2 = min(box1[2], box2[2])
+    y2 = min(box1[3], box2[3])
+    
+    if x2 <= x1 or y2 <= y1:
+        return 0.0
+    
+    intersection = (x2 - x1) * (y2 - y1)
+    area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
+    area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
+    union = area1 + area2 - intersection
+    
+    return intersection / union if union > 0 else 0.0
+
+
+def deduplicate_detections(detections, iou_threshold=0.3):
+    """Merge detections that likely represent the same physical damage."""
+    if not detections:
+        return []
+    
+    # Group by damage type
+    from collections import defaultdict
+    by_type = defaultdict(list)
+    for d in detections:
+        by_type[d["damage_type"]].append(d)
+    
+    unique_detections = []
+    for damage_type, dets in by_type.items():
+        # Sort by confidence descending
+        dets.sort(key=lambda x: x["confidence"], reverse=True)
+        
+        # IoU-based clustering: keep detections that don't overlap significantly
+        kept = []
+        for det in dets:
+            bbox = det.get("bounding_box_xyxy", det.get("bbox", []))
+            if len(bbox) != 4:
+                kept.append(det)
+                continue
+            
+            # Check IoU with already kept detections of same type
+            is_duplicate = False
+            for kept_det in kept:
+                kept_bbox = kept_det.get("bounding_box_xyxy", kept_det.get("bbox", []))
+                if len(kept_bbox) == 4:
+                    iou = calculate_iou(bbox, kept_bbox)
+                    if iou > iou_threshold:
+                        is_duplicate = True
+                        break
+            
+            if not is_duplicate:
+                kept.append(det)
+    
+        unique_detections.extend(kept)
+    
+    return unique_detections
+
+
 def get_detector(confidence_threshold: float = 0.25) -> CarDamageDetector:
     global _detector
     if _detector is None:
@@ -579,6 +640,10 @@ async def assess_multimodal(
         video_frames_extracted = 0
         video_duration = 0.0
         video_warnings = [f"Video processing failed: {str(e)}"]
+    
+    # ─── Deduplicate Detections Across Frames/Views ───────────────────────────
+    # Same physical damage appears in multiple frames/views; deduplicate by IoU clustering
+    all_detections = deduplicate_detections(all_detections)
     
     # ─── Make Collective Decision ──────────────────────────────────────────
     decision_result = make_collective_decision(agent, all_detections)

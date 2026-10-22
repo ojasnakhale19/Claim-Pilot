@@ -368,6 +368,27 @@ VALID_DAMAGE_CLASSES = {
     "dent", "scratch", "crack", "glass_shatter", "lamp_broken", "tire_flat"
 }
 
+
+def normalize_damage_type(name: str) -> str:
+    """Normalize damage type name to match insurance-valid classes (snake_case)."""
+    s = (name or "").strip().lower()
+    # Match common variants to CarDD 6 classes
+    if "scratch" in name.lower():
+        return "scratch"
+    if "dent" in name.lower():
+        return "dent"
+    if "crack" in name.lower():
+        return "crack"
+    if "glass" in name.lower() and "shatter" in name.lower():
+        return "glass_shatter"
+    if "lamp" in name.lower() and "broken" in name.lower():
+        return "lamp_broken"
+    if "tire" in name.lower() and "flat" in name.lower():
+        return "tire_flat"
+    # Fallback: convert to snake_case
+    return name.lower().replace(" ", "_").replace("-", "_")
+
+
 def is_valid_damage_class(name: str) -> bool:
     """Check if a damage class is valid for insurance assessment."""
     normalized = normalize_damage_type(name)
@@ -1375,12 +1396,50 @@ async def assess_video_four_view(
         
         unique_detections = []
         for damage_type, dets in by_type.items():
-            # Simple deduplication: keep highest confidence detection per type
-            # In production, could use IoU-based clustering across views
-            best = max(dets, key=lambda x: x["confidence"])
-            unique_detections.append(best)
+            # Sort by confidence descending
+            dets.sort(key=lambda x: x["confidence"], reverse=True)
+            
+            # IoU-based clustering: keep detections that don't overlap significantly
+            kept = []
+            for det in dets:
+                bbox = det.get("bounding_box_xyxy", det.get("bbox", []))
+                if len(bbox) != 4:
+                    kept.append(det)
+                    continue
+                    
+                # Check IoU with already kept detections of same type
+                is_duplicate = False
+                for kept_det in kept:
+                    kept_bbox = kept_det.get("bounding_box_xyxy", kept_det.get("bbox", []))
+                    if len(kept_bbox) == 4:
+                        iou = calculate_iou(bbox, kept_bbox)
+                        if iou > iou_threshold:
+                            is_duplicate = True
+                            break
+                
+                if not is_duplicate:
+                    kept.append(det)
+            
+            unique_detections.extend(kept)
         
         return unique_detections
+
+    def calculate_iou(box1, box2):
+        """Calculate IoU between two boxes [x1, y1, x2, y2]."""
+        x1 = max(box1[0], box2[0])
+        y1 = max(box1[1], box2[1])
+        x2 = min(box1[2], box2[2])
+        y2 = min(box1[3], box2[3])
+        
+        if x2 <= x1 or y2 <= y1:
+            return 0.0
+        
+        intersection = (x2 - x1) * (y2 - y1)
+        area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
+        area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
+        union = area1 + area2 - intersection
+        
+        return intersection / union if union > 0 else 0.0
     
     unique_detections = deduplicate_detections(all_detections)
     
@@ -1412,9 +1471,19 @@ async def assess_video_four_view(
         
         cost_map = DAMAGE_COST_MAP.get(primary_damage, DAMAGE_COST_MAP["damage"])
         min_cost, max_cost = cost_map.get(severity, cost_map["minor"])
-        if total_count > 1:
-            min_cost = int(min_cost * (1 + 0.3 * (total_count - 1)))
-            max_cost = int(max_cost * (1 + 0.3 * (total_count - 1)))
+        
+        # Use unique damage types for cost multiplier (not total detections)
+        unique_damage_types = set(d["damage_type"] for d in normalized_detections)
+        unique_count = len(unique_damage_types)
+        
+        if unique_count > 1:
+            # Each additional unique damage type adds 30% to cost
+            min_cost = int(min_cost * (1 + 0.3 * (unique_count - 1)))
+            max_cost = int(max_cost * (1 + 0.3 * (unique_count - 1)))
+        elif total_count > 1:
+            # Multiple detections of same type: smaller multiplier (10% per additional)
+            min_cost = int(min_cost * (1 + 0.1 * (total_count - 1)))
+            max_cost = int(max_cost * (1 + 0.1 * (total_count - 1)))
         
         component_map = {
             "dent": "Body Panel",
@@ -1427,7 +1496,7 @@ async def assess_video_four_view(
         }
         primary_component = component_map.get(primary_damage, "Vehicle Component")
         unique_types = list(set(d["damage_type"] for d in normalized_detections))
-        summary = f"Video+4-View: {total_count} unique damage instance(s) (from {len(all_detections)} raw detections across 14 images). Types: {', '.join(unique_types)}. Primary: {primary_damage} ({severity})."
+        summary = f"Video+4-View: {total_count} deduplicated damage instance(s) across {len(unique_types)} type(s) (from {len(all_detections)} raw detections across 14 images). Types: {', '.join(unique_types)}. Primary: {primary_damage} ({severity})."
     else:
         severity = "uncertain"
         min_cost = 0
@@ -1479,14 +1548,33 @@ async def assess_video_four_view(
 # ─── Provider Status Endpoint ───────────────────────────────────────────────
 @app.get("/ai/provider/status")
 async def ai_provider_status():
-    """Get the status of configured AI providers."""
+    """Get the status of configured AI providers with diagnostic info."""
+    gemini_configured = bool(GEMINI_API_KEY)
+    openai_configured = bool(OPENAI_API_KEY)
+    hybrid_available = (AI_PROVIDER == "gemini" and gemini_configured) or (AI_PROVIDER == "openai" and openai_configured)
+    
+    issues = []
+    if not gemini_configured and not openai_configured:
+        issues.append("No AI provider API keys configured. Set GEMINI_API_KEY or OPENAI_API_KEY environment variables.")
+    if AI_PROVIDER == "gemini" and not gemini_configured:
+        issues.append(f"AI_PROVIDER is 'gemini' but GEMINI_API_KEY is not set")
+    if AI_PROVIDER == "openai" and not openai_configured:
+        issues.append(f"AI_PROVIDER is 'openai' but OPENAI_API_KEY is not set")
+    if AI_PROVIDER not in ("gemini", "openai"):
+        issues.append(f"Invalid AI_PROVIDER: '{AI_PROVIDER}'. Must be 'gemini' or 'openai'")
+    
     return {
         "provider": AI_PROVIDER,
-        "gemini_configured": bool(GEMINI_API_KEY),
+        "gemini_configured": gemini_configured,
         "gemini_model": GEMINI_MODEL,
-        "openai_configured": bool(OPENAI_API_KEY),
+        "openai_configured": openai_configured,
         "openai_model": OPENAI_MODEL,
-        "hybrid_available": (AI_PROVIDER == "gemini" and bool(GEMINI_API_KEY)) or (AI_PROVIDER == "openai" and bool(OPENAI_API_KEY)),
+        "hybrid_available": hybrid_available,
+        "issues": issues,
+        "setup_instructions": {
+            "gemini": "1. Get API key from https://aistudio.google.com/app/apikey  2. Set GEMINI_API_KEY env var  3. Set AI_PROVIDER=gemini",
+            "openai": "1. Get API key from https://platform.openai.com/api-keys  2. Set OPENAI_API_KEY env var  3. Set AI_PROVIDER=openai"
+        } if not hybrid_available else None
     }
 
 
