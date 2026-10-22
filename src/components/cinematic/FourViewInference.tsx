@@ -6,7 +6,7 @@ import { Card, CardContent } from '../ui/Card';
 import { Badge } from '../ui/Badge';
 import { Progress } from '../ui/Progress';
 import { cn, isValidImageFile, getFileSizeString, formatDamageType } from '../../lib/utils';
-import { createClaimPilotYOLO, type Detection, type InferenceState, filterValidDetections, VALID_DAMAGE_CLASSES_ARRAY as VALID_DAMAGE_CLASSES } from '../../lib/yoloInference';
+import { createClaimPilotYOLO, type Detection, type InferenceState, filterValidDetections, VALID_DAMAGE_CLASSES_ARRAY } from '../../lib/yoloInference';
 
 const REQUIRED_VIEWS = [
   { id: 'top', label: 'Top View', icon: '⬆', desc: 'Elevated view of damaged area', color: 'text-blue-400', bgColor: 'bg-blue-500/10' },
@@ -761,7 +761,7 @@ export function FourViewInference({
                   <div className="rounded-xl border border-graphite-700 bg-graphite-900/50 p-4 text-center">
                     <p className="text-xs text-graphite-500 uppercase tracking-wider mb-1">Valid Detections</p>
                     <p className="font-bold text-2xl text-electric-400">
-                      {Object.values(inferenceResults).reduce((sum, v) => sum + v.detections.filter(d => VALID_DAMAGE_CLASSES.includes(d.className)).length, 0)}
+                      {Object.values(inferenceResults).reduce((sum, v) => sum + v.detections.filter(d => VALID_DAMAGE_CLASSES_ARRAY.includes(d.className)).length, 0)}
                     </p>
                     <p className="text-xs text-graphite-500 mt-1">(6 insurance classes only)</p>
                   </div>
@@ -796,7 +796,7 @@ export function FourViewInference({
                 {REQUIRED_VIEWS.map((view) => {
                   const result = inferenceResults[view.id];
                   const allDetections = result?.detections || [];
-                  const validDetections = allDetections.filter(d => VALID_DAMAGE_CLASSES.includes(d.className));
+                  const validDetections = allDetections.filter(d => VALID_DAMAGE_CLASSES_ARRAY.includes(d.className));
 
                   return (
                     <Card key={view.id} className="border-graphite-700 bg-graphite-900/50 overflow-hidden">

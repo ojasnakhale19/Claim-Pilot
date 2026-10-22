@@ -316,6 +316,23 @@ export class YOLOInference {
 }
 
 /**
+ * All 10 classes that the ONNX model was trained with (in correct order)
+ * Model: YOLOv8/YOLOv11 trained on CarDD dataset with 10 classes
+ */
+export const MODEL_CLASSES = [
+  'crack',
+  'crash',
+  'dent',
+  'dislocated_part',
+  'glass_shatter',
+  'lamp_broken',
+  'no_part',
+  'rub',
+  'scratch',
+  'tire_flat'
+] as const;
+
+/**
  * Valid damage classes for insurance assessment (6 classes matching backend CarDD model)
  * These are the ONLY classes that should be used for cost estimation and settlement.
  * Classes like 'crash', 'dislocated_part', 'no_part', 'rub' are NOT valid damage types for insurance.
@@ -335,14 +352,15 @@ export type ValidDamageClass = typeof VALID_DAMAGE_CLASSES[number];
  * Convert readonly tuple to mutable array for function parameters
  */
 export const VALID_DAMAGE_CLASSES_ARRAY: string[] = [...VALID_DAMAGE_CLASSES];
+export const MODEL_CLASSES_ARRAY: string[] = [...MODEL_CLASSES];
 
 /**
  * Create a configured YOLO inference instance for the app
- * Uses only the 6 valid damage classes that match the backend YOLO11s CarDD model
+ * Uses ALL 10 model classes for correct ONNX output parsing, then filters to 6 valid insurance classes
  */
 export function createClaimPilotYOLO(
   modelPath: string = '/best.onnx',
-  classNames: string[] = VALID_DAMAGE_CLASSES_ARRAY
+  classNames: string[] = MODEL_CLASSES_ARRAY
 ): YOLOInference {
   return new YOLOInference({
     modelPath,
