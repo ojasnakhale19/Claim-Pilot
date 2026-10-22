@@ -390,6 +390,7 @@ export function ClaimFlowPage() {
 
   // UI state
   const [, setErrors] = useState<Record<string, string>>({});
+  const [initialMessageSent, setInitialMessageSent] = useState(false);
   const [showLightbox, setShowLightbox] = useState<UploadedPhoto | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -418,6 +419,20 @@ export function ClaimFlowPage() {
 
   const handleAIValidationError = useCallback((validation: any) => {
     console.log('Validation error:', validation);
+  }, []);
+
+  const handleFilesChange = useCallback((files: Record<string, File | null>) => {
+    fourViewFilesRef.current = files;
+    // Sync viewStates with file info for hybrid assessment
+    const newViewStates: Record<string, { file: File | null; preview: string | null }> = {};
+    for (const view of REQUIRED_VIEWS) {
+      const file = files[view];
+      newViewStates[view] = {
+        file,
+        preview: file ? URL.createObjectURL(file) : null,
+      };
+    }
+    setViewStates(newViewStates);
   }, []);
 
   // Hybrid AI Assessment handler (local YOLO + cloud multimodal reasoning)
@@ -913,6 +928,7 @@ export function ClaimFlowPage() {
     setCurrentOffer(0);
     setOfferAccepted(false);
     setShowLightbox(null);
+    setInitialMessageSent(false);
     // Reset four-view state
     setViewStates({
       top: { file: null, preview: null },
@@ -931,6 +947,7 @@ export function ClaimFlowPage() {
   const handleHumanReview = useCallback(() => {
     setPreviousStage('assessment');
     setStage('humanReview');
+    setInitialMessageSent(false);
     addMessage({
       sender: 'bot',
       text: 'Your request for human review has been logged. A claims adjuster will contact you within 2 business days. You can also upload clearer photos in the meantime.',
@@ -942,16 +959,18 @@ export function ClaimFlowPage() {
     setStage('upload');
     setAssessment(null);
     setAssessmentViews(null);
+    setInitialMessageSent(false);
   }, []);
 
   const handleEnterChat = useCallback(() => {
     setPreviousStage('assessment');
     setStage('chat');
+    setInitialMessageSent(false);
   }, []);
 
   // Initial bot message when entering chat
   useEffect(() => {
-    if (stage === 'chat' && messages.length === 0 && assessment) {
+    if (stage === 'chat' && !initialMessageSent && assessment) {
       const data = assessment.data;
       addMessage({
         sender: 'bot',
@@ -960,8 +979,9 @@ export function ClaimFlowPage() {
         offerAmount: data.settlementOffer,
       });
       setCurrentOffer(data.settlementOffer);
+      setInitialMessageSent(true);
     }
-  }, [stage, messages.length, assessment, addMessage]);
+  }, [stage, initialMessageSent, assessment, addMessage]);
 
   // Lightbox modal
   const renderLightbox = () => {
@@ -1363,19 +1383,7 @@ export function ClaimFlowPage() {
                             onInferenceComplete={handleHybridAssessmentComplete}
                             onError={handleAIAssessmentError}
                             onValidationError={handleAIValidationError}
-                            onFilesChange={(files) => {
-                              fourViewFilesRef.current = files;
-                              // Sync viewStates with file info for hybrid assessment
-                              const newViewStates: Record<string, { file: File | null; preview: string | null }> = {};
-                              for (const view of REQUIRED_VIEWS) {
-                                const file = files[view];
-                                newViewStates[view] = {
-                                  file,
-                                  preview: file ? URL.createObjectURL(file) : null,
-                                };
-                              }
-                              setViewStates(newViewStates);
-                            }}
+                            onFilesChange={handleFilesChange}
                             disabled={stage !== 'upload'}
                           />
                         )}
