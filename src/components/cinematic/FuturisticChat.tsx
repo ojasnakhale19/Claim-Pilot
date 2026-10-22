@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, Zap, CheckCircle, Plus, Loader2, ChevronUp, ChevronDown } from 'lucide-react';
+import { Send, Zap, CheckCircle, Plus, Loader2, ChevronUp, ChevronDown, X, AlertTriangle } from 'lucide-react';
 import { CardContent, CardFooter } from '../ui/Card';
 import { cn, formatNumber } from '../../lib/utils';
 
@@ -38,6 +38,252 @@ interface FuturisticChatProps {
   disabled?: boolean;
 }
 
+interface SettlementBreakdown {
+  grossRepairCost: { min: number; max: number };
+  depreciation: { amount: number; percentage: number; reason: string };
+  deductible: { amount: number; description: string };
+  exclusions: { amount: number; description: string; items: string[] }[];
+  netSettlement: number;
+  breakdownItems: { category: string; description: string; amount: number; type: 'addition' | 'deduction' }[];
+}
+
+// Settlement Breakdown Modal Component
+function SettlementBreakdownModal({ 
+  breakdown, 
+  isOpen, 
+  onClose, 
+  onConfirm 
+}: { 
+  breakdown: SettlementBreakdown; 
+  isOpen: boolean; 
+  onClose: () => void; 
+  onConfirm: () => void; 
+}) {
+  if (!isOpen || !breakdown) return null;
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        onClick={onClose}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settlement-breakdown-title"
+      >
+        <motion.div
+          className="relative w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-3xl bg-graphite-900/95 backdrop-blur-2xl border border-graphite-700 shadow-[0_0_80px_-20px_rgba(0,0,0,0.8)]"
+          initial={{ opacity: 0, scale: 0.95, y: 20 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.95, y: -20 }}
+          transition={{ duration: 0.3, ease: [0.34, 1.56, 0.64, 1] }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {/* Header */}
+          <div className="sticky top-0 z-10 flex items-center justify-between gap-4 p-6 border-b border-graphite-700 bg-gradient-to-r from-graphite-900 to-graphite-800 rounded-t-3xl">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-electric-500/10 border border-electric-500/20">
+                <Zap className="h-5 w-5 text-electric-400" aria-hidden="true" />
+              </div>
+              <div>
+                <h2 id="settlement-breakdown-title" className="text-lg font-bold text-graphite-100">Settlement Breakdown</h2>
+                <p className="text-xs text-graphite-500 font-mono">ClaimPilot AI Assessment</p>
+              </div>
+            </div>
+            <motion.button
+              onClick={onClose}
+              className="p-2 rounded-xl bg-graphite-800/50 border border-graphite-700 text-graphite-400 hover:text-electric-400 hover:border-electric-500/50 transition-all"
+              whileHover={{ scale: 1.1 }}
+              whileTap={{ scale: 0.95 }}
+              aria-label="Close settlement breakdown"
+            >
+              <X className="h-5 w-5" />
+            </motion.button>
+          </div>
+
+          {/* Content */}
+          <div className="p-6 space-y-6 max-h-[60vh] overflow-y-auto">
+            {/* Gross Repair Cost */}
+            <div className="rounded-2xl border border-graphite-700 bg-graphite-900/50 p-5">
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-xs font-mono text-graphite-400 uppercase tracking-wider">GROSS REPAIR ESTIMATE</span>
+                <span className="text-xs font-mono text-electric-400">AI ESTIMATE</span>
+              </div>
+              <div className="text-3xl font-bold font-mono tabular-nums text-gradient-electric">
+                ₹{breakdown.grossRepairCost.min.toLocaleString('en-IN')} – ₹{breakdown.grossRepairCost.max.toLocaleString('en-IN')}
+              </div>
+              <p className="mt-2 text-sm text-graphite-400">Estimated garage repair cost range (parts + labor + paint)</p>
+            </div>
+
+            {/* Deductions */}
+            <div className="space-y-3">
+              <h4 className="text-xs font-mono text-graphite-400 uppercase tracking-wider">DEDUCTIONS</h4>
+              
+              {/* Depreciation */}
+              <div className="rounded-xl border border-graphite-700 bg-graphite-900/30 p-4 flex items-center justify-between gap-4">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xs font-mono text-graphite-400 uppercase tracking-wider">DEPRECIATION</span>
+                    <span className="text-xs font-mono text-amber-400">{breakdown.depreciation.percentage}%</span>
+                  </div>
+                  <p className="text-xs text-graphite-500">{breakdown.depreciation.reason}</p>
+                </div>
+                <div className="text-right">
+                  <motion.p
+                    className="text-2xl font-bold font-mono text-amber-400"
+                    initial={{ opacity: 0, scale: 0.8 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    transition={{ duration: 0.5, delay: 0.2 }}
+                  >
+                    -₹{breakdown.depreciation.amount.toLocaleString('en-IN')}
+                  </motion.p>
+                </div>
+              </div>
+
+              {/* Deductible */}
+              <div className="rounded-xl border border-graphite-700 bg-graphite-900/30 p-4 flex items-center justify-between gap-4">
+                <div className="flex-1">
+                  <span className="text-xs font-mono text-graphite-400 uppercase tracking-wider">POLICY DEDUCTIBLE</span>
+                  <p className="mt-1 text-xs text-graphite-500">{breakdown.deductible.description}</p>
+                </div>
+                <div className="text-right">
+                  <motion.p
+                    className="text-2xl font-bold font-mono text-danger-400"
+                    initial={{ opacity: 0, scale: 0.8 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    transition={{ duration: 0.5, delay: 0.3 }}
+                  >
+                    -₹{breakdown.deductible.amount.toLocaleString('en-IN')}
+                  </motion.p>
+                </div>
+              </div>
+
+              {/* Exclusions */}
+              {breakdown.exclusions.length > 0 && (
+                <div className="rounded-xl border border-danger-500/30 bg-danger-500/5 p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <AlertTriangle className="h-4 w-4 text-danger-400" />
+                    <span className="text-xs font-mono text-danger-400 uppercase tracking-wider">POLICY EXCLUSIONS</span>
+                  </div>
+                  <div className="space-y-2">
+                    {breakdown.exclusions.map((exc, i) => (
+                      <motion.div
+                        key={i}
+                        className="flex items-center justify-between gap-4 p-3 rounded-lg bg-graphite-900/50 border border-graphite-700"
+                        initial={{ opacity: 0, x: -20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ duration: 0.3, delay: 0.4 + i * 0.1 }}
+                      >
+                        <div>
+                          <p className="text-sm text-danger-300 font-medium">{exc.items.join(', ')}</p>
+                          <p className="text-xs text-graphite-500">{exc.description}</p>
+                        </div>
+                        <motion.p
+                          className="text-lg font-bold font-mono text-danger-400"
+                          initial={{ opacity: 0, scale: 0.8 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          transition={{ duration: 0.5, delay: 0.4 + i * 0.1 }}
+                        >
+                          -₹{exc.amount.toLocaleString('en-IN')}
+                        </motion.p>
+                      </motion.div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Net Settlement */}
+            <motion.div
+              className="rounded-2xl border-2 border-electric-500/30 bg-gradient-to-r from-electric-500/10 to-cyan-500/10 p-6"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.6, delay: 0.6 }}
+            >
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-xs font-mono text-graphite-400 uppercase tracking-wider">NET CASH SETTLEMENT</span>
+                <span className="text-xs font-mono text-electric-400">INSTANT PAYOUT</span>
+              </div>
+              <motion.p
+                className="text-4xl sm:text-5xl font-bold font-mono tabular-nums text-gradient-electric"
+                initial={{ opacity: 0, scale: 0.8 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ duration: 0.7, delay: 0.3, ease: [0.34, 1.56, 0.64, 1] }}
+              >
+                ₹{breakdown.netSettlement.toLocaleString('en-IN')}
+              </motion.p>
+              <p className="mt-2 text-sm text-graphite-400 text-center">
+                Instant cash payout • No garage bills • No deductible delays
+              </p>
+            </motion.div>
+
+            {/* Breakdown Items Table */}
+            <div className="rounded-xl border border-graphite-700 bg-graphite-900/30 overflow-hidden">
+              <div className="px-4 py-3 border-b border-graphite-700">
+                <h4 className="text-xs font-mono text-graphite-400 uppercase tracking-wider">DETAILED BREAKDOWN</h4>
+              </div>
+              <div className="divide-y divide-graphite-700">
+                {breakdown.breakdownItems.map((item, i) => (
+                  <motion.div
+                    key={i}
+                    className="flex items-center justify-between px-4 py-3 gap-4 transition-colors hover:bg-graphite-800/50"
+                    initial={{ opacity: 0, x: -20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ duration: 0.3, delay: 0.4 + i * 0.05 }}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-graphite-100 truncate">{item.category}</p>
+                      <p className="text-xs text-graphite-500 truncate">{item.description}</p>
+                    </div>
+                    <motion.p
+                      className={`text-lg font-bold font-mono tabular-nums ${item.type === 'addition' ? 'text-success-400' : 'text-danger-400'} whitespace-nowrap`}
+                      initial={{ opacity: 0, scale: 0.8 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      transition={{ duration: 0.3, delay: 0.5 + i * 0.05 }}
+                    >
+                      {item.type === 'addition' ? '+' : '-'}₹{Math.abs(item.amount).toLocaleString('en-IN')}
+                    </motion.p>
+                  </motion.div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Footer Actions */}
+          <div className="sticky bottom-0 z-10 flex gap-3 p-6 border-t border-graphite-700 bg-gradient-to-r from-graphite-900 to-graphite-800 rounded-b-3xl">
+            <motion.button
+              onClick={onClose}
+              className="flex-1 gap-2 px-6 py-3 rounded-xl border border-graphite-600 bg-transparent text-graphite-300 hover:border-electric-500 hover:text-electric-400 hover:bg-electric-500/10 transition-all font-medium"
+              whileHover={{ y: -2 }}
+              whileTap={{ scale: 0.98 }}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.8 }}
+            >
+              <X className="h-4 w-4 mr-2" />
+              Close
+            </motion.button>
+            <motion.button
+              onClick={onConfirm}
+              className="flex-1 gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-success-500 to-emerald-500 text-background font-semibold shadow-[0_0_30px_-5px_rgba(34,197,94,0.4)] hover:from-success-400 hover:to-emerald-400 transition-all"
+              whileHover={{ y: -2, boxShadow: '0 0 40px -5px rgba(34,197,94,0.5)' }}
+              whileTap={{ scale: 0.98 }}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.9 }}
+            >
+              <CheckCircle className="h-4 w-4" />
+              Confirm Settlement
+            </motion.button>
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
 export function FuturisticChat({
   messages,
   chatInput,
@@ -55,6 +301,8 @@ export function FuturisticChat({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const [showOfferDetails, setShowOfferDetails] = useState(true);
+  const [showSettlementBreakdown, setShowSettlementBreakdown] = useState(false);
+  const [settlementBreakdown, setSettlementBreakdown] = useState<any>(null);
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -87,6 +335,7 @@ export function FuturisticChat({
               {assessment ? `ASSESSMENT: ${assessment.data.component.toUpperCase()} · ${assessment.data.severity.toUpperCase()}` : 'AWAITING ASSESSMENT'}
             </p>
           </div>
+        </div>
         <motion.button
             onClick={() => setShowOfferDetails(!showOfferDetails)}
             className="p-2 rounded-xl bg-graphite-800/50 border border-graphite-700 text-graphite-400 hover:text-electric-400 hover:border-electric-500/50 transition-all touch-target-comfortable"
@@ -96,7 +345,6 @@ export function FuturisticChat({
           >
             {showOfferDetails ? <ChevronUp className="h-5 w-5" /> : <ChevronDown className="h-5 w-5" />}
           </motion.button>
-        </div>
       </motion.div>
 
       {/* Chat Messages */}
@@ -121,7 +369,7 @@ export function FuturisticChat({
             <span>SECURE CHANNEL ESTABLISHED</span>
             <span className="text-electric-400">ENCRYPTED</span>
           </motion.div>
-
+          
           <AnimatePresence mode="popLayout">
             {messages.map((msg, index) => (
               <ChatMessageBubble
@@ -227,7 +475,7 @@ export function FuturisticChat({
           </div>
 
           <p className="mt-3 text-center text-[11px] text-graphite-500 font-mono mobile-text-xs">
-            Commands: <span className="text-electric-400">"₹5000"</span> · <span className="text-amber-400">"more"</span> · <span className="text-graphite-400">"breakdown"</span> · <span className="text-success-400">"accept"</span>
+            Commands: <span className="text-electric-400">"₹5000"</span> • <span className="text-amber-400">"more"</span> • <span className="text-graphite-400">"breakdown"</span> • <span className="text-success-400">"accept"</span>
           </p>
         </CardFooter>
       </motion.div>
@@ -248,7 +496,7 @@ export function FuturisticChat({
               animate={{ opacity: [1, 0.5, 1] }}
               transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
             />
-
+            
             <CardContent className="pt-6 pb-4 px-4 sm:px-6">
               <div className="flex items-center justify-between mb-5 mobile-flex-col mobile-items-center mobile-gap-4">
                 <motion.h4
@@ -336,16 +584,41 @@ export function FuturisticChat({
             <CardFooter className="px-6 pb-6 pt-0 border-t border-graphite-700/50">
               {offerAccepted ? (
                 <motion.button
-                  onClick={onConfirmOffer}
+                  onClick={() => {
+                    setSettlementBreakdown({
+                      grossRepairCost: { 
+                        min: assessment?.data?.costMin || 0, 
+                        max: assessment?.data?.costMax || 0 
+                      },
+                      depreciation: { 
+                        amount: Math.round(((assessment?.data?.costMin || 0) + (assessment?.data?.costMax || 0)) / 2 * 0.15),
+                        percentage: 15,
+                        reason: 'Standard depreciation for vehicle age'
+                      },
+                      deductible: { 
+                        amount: 1000, 
+                        description: 'Policy deductible (standard comprehensive)' 
+                      },
+                      exclusions: [],
+                      netSettlement: currentOffer || assessment?.data?.settlementOffer || 0,
+                      breakdownItems: [
+                        { category: 'Gross Repair Cost', description: 'Estimated repair cost', amount: Math.round(((assessment?.data?.costMin || 0) + (assessment?.data?.costMax || 0)) / 2), type: 'addition' },
+                        { category: 'Depreciation', description: 'Standard depreciation (15%)', amount: -Math.round(((assessment?.data?.costMin || 0) + (assessment?.data?.costMax || 0)) / 2 * 0.15), type: 'deduction' },
+                        { category: 'Policy Deductible', description: 'Standard comprehensive deductible', amount: -1000, type: 'deduction' },
+                        { category: 'Net Cash Settlement', description: 'Final cash settlement offer', amount: currentOffer || assessment?.data?.settlementOffer || 0, type: 'addition' },
+                      ],
+                    });
+                    setShowSettlementBreakdown(true);
+                  }}
                   className="w-full gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-success-500 to-emerald-500 text-background font-semibold shadow-[0_0_30px_-5px_rgba(34,197,94,0.4)] hover:from-success-400 hover:to-emerald-400 transition-all"
-                  whileHover={{ y: -2, boxShadow: '0 0 40px -5px rgba(34, 197, 94, 0.5)' }}
+                  whileHover={{ y: -2, boxShadow: '0 0 40px -5px rgba(34,197,94,0.5)' }}
                   whileTap={{ scale: 0.98 }}
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: 0.6 }}
                 >
                   <CheckCircle className="h-4 w-4" />
-                  Finalize Settlement
+                  View Settlement Breakdown
                 </motion.button>
               ) : (
                 <motion.button
@@ -360,10 +633,10 @@ export function FuturisticChat({
                   <Plus className="h-4 w-4" />
                   Increase Offer (+₹500)
                 </motion.button>
-              )}
+              )} 
             </CardFooter>
           </motion.div>
-        )}
+        )} 
       </AnimatePresence>
 
       {/* Suggested Replies */}
@@ -395,8 +668,16 @@ export function FuturisticChat({
               variant="amber"
             />
           </motion.div>
-        )}
+        )} 
       </AnimatePresence>
+
+        {/* Settlement Breakdown Modal */}
+        <SettlementBreakdownModal
+          breakdown={settlementBreakdown}
+          isOpen={showSettlementBreakdown}
+          onClose={() => setShowSettlementBreakdown(false)}
+          onConfirm={onConfirmOffer}
+        />
     </div>
   );
 }
@@ -450,7 +731,7 @@ function ChatMessageBubble({ message, index, formatTime }: ChatMessageBubbleProp
               animate={{ scale: [1, 1.1, 1] }}
               transition={{ duration: 1.5, repeat: Infinity }}
             >
-              ₹
+              ₹1
             </motion.div>
           )}
           <p className="whitespace-pre-wrap">{message.text}</p>
