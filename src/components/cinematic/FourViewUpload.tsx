@@ -5,11 +5,10 @@ import { Button } from '../ui/Button';
 import { Card, CardContent } from '../ui/Card';
 import { Badge } from '../ui/Badge';
 import { Progress } from '../ui/Progress';
-import { cn, isValidImageFile, getFileSizeString, base64ToDataUrl } from '../../lib/utils';
+import { cn, isValidImageFile, getFileSizeString } from '../../lib/utils';
 import {
-  assessFourView,
-  type AssessmentResponse,
-  type FourViewAssessmentRequest,
+  assessDirect,
+  type DirectAssessmentResponse,
 } from '../../lib/utils';
 
 const REQUIRED_VIEWS = [
@@ -27,28 +26,35 @@ interface ViewUploadState {
 }
 
 interface FourViewUploadProps {
-  onAssessmentComplete: (result: AssessmentResponse) => void;
+  onAssessmentComplete: (result: DirectAssessmentResponse) => void;
   onError: (error: string) => void;
   onValidationError: (validation: any) => void;
+  onFilesChange?: (files: Record<string, File | null>) => void;
   disabled?: boolean;
   confidenceThreshold?: number;
   imageSize?: number;
+  vehicleInfo?: {
+    company: string;
+    model: string;
+    year: string;
+    causeOfDamage: string;
+  };
 }
 
 export function FourViewUpload({
   onAssessmentComplete,
   onError,
   onValidationError,
+  onFilesChange,
   disabled = false,
-  confidenceThreshold = 0.25,
-  imageSize = 640,
+  vehicleInfo,
 }: FourViewUploadProps) {
   const [viewStates, setViewStates] = useState<Record<string, ViewUploadState>>({});
   const [assessing, setAssessing] = useState(false);
   const [assessmentProgress, setAssessmentProgress] = useState(0);
   const [assessmentStep, setAssessmentStep] = useState(0);
   const [showResults, setShowResults] = useState(false);
-  const [assessmentResult, setAssessmentResult] = useState<AssessmentResponse | null>(null);
+  const [assessmentResult, setAssessmentResult] = useState<DirectAssessmentResponse | null>(null);
   const [validationResult, setValidationResult] = useState<any>(null);
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
@@ -78,11 +84,20 @@ export function FourViewUpload({
     }
 
     const preview = URL.createObjectURL(file);
-    setViewStates(prev => ({
-      ...prev,
-      [viewId]: { file, preview, error: null, loading: false },
-    }));
-  }, []);
+    setViewStates(prev => {
+      const newState = {
+        ...prev,
+        [viewId]: { file, preview, error: null, loading: false },
+      };
+      // Notify parent of file changes
+      const files: Record<string, File | null> = {};
+      REQUIRED_VIEWS.forEach(v => {
+        files[v.id] = newState[v.id]?.file ?? null;
+      });
+      onFilesChange?.(files);
+      return newState;
+    });
+  }, [onFilesChange]);
 
   const handleFileSelect = useCallback((viewId: string, e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -111,14 +126,23 @@ export function FourViewUpload({
   const removeFile = useCallback((viewId: string) => {
     const state = viewStates[viewId];
     if (state?.preview) URL.revokeObjectURL(state.preview);
-    setViewStates(prev => ({
-      ...prev,
-      [viewId]: { file: null, preview: null, error: null, loading: false },
-    }));
+    setViewStates(prev => {
+      const newState = {
+        ...prev,
+        [viewId]: { file: null, preview: null, error: null, loading: false },
+      };
+      // Notify parent of file changes
+      const files: Record<string, File | null> = {};
+      REQUIRED_VIEWS.forEach(v => {
+        files[v.id] = newState[v.id]?.file ?? null;
+      });
+      onFilesChange?.(files);
+      return newState;
+    });
     setShowResults(false);
     setAssessmentResult(null);
     setValidationResult(null);
-  }, [viewStates]);
+  }, [viewStates, onFilesChange]);
 
   const triggerFileInput = useCallback((viewId: string) => {
     fileInputRefs.current[viewId]?.click();
@@ -127,11 +151,14 @@ export function FourViewUpload({
   const allViewsUploaded = REQUIRED_VIEWS.every(v => viewStates[v.id]?.file !== null);
 
   const startAssessment = useCallback(async () => {
+    console.log('[FourViewUpload] startAssessment called', { allViewsUploaded, assessing, disabled });
     if (!allViewsUploaded) {
+      console.log('[FourViewUpload] Not all views uploaded');
       onError('Please upload all four required views.');
       return;
     }
 
+    console.log('[FourViewUpload] Starting assessment...');
     setAssessing(true);
     setAssessmentProgress(0);
     setAssessmentStep(0);
@@ -141,45 +168,65 @@ export function FourViewUpload({
 
     try {
       // Step 1: Validation
+      console.log('[FourViewUpload] Starting validation steps...');
       for (let i = 0; i < assessmentSteps.length; i++) {
         await new Promise(r => setTimeout(r, 800));
         setAssessmentStep(i + 1);
         setAssessmentProgress(Math.round(((i + 1) / assessmentSteps.length) * 100));
+        console.log(`[FourViewUpload] Step ${i + 1}: ${assessmentSteps[i]}`);
       }
 
-      const request: FourViewAssessmentRequest = {
+      const request = {
         top: viewStates.top.file!,
         bottom: viewStates.bottom.file!,
         left: viewStates.left.file!,
         right: viewStates.right.file!,
-        confidence_threshold: confidenceThreshold,
-        image_size: imageSize,
+        vehicle_make: vehicleInfo?.company || '',
+        vehicle_model: vehicleInfo?.model || '',
+        vehicle_year: vehicleInfo?.year || '',
+        cause_of_damage: vehicleInfo?.causeOfDamage || '',
       };
+      console.log('[FourViewUpload] Calling /assess/direct', {
+        make: request.vehicle_make,
+        model: request.vehicle_model,
+        cause: request.cause_of_damage,
+      });
 
-      const result = await assessFourView(request);
+      const result = await assessDirect(request);
+      console.log('[FourViewUpload] Direct OpenAI assessment received:', {
+        status: result.assessment_status,
+        mode: result.execution_mode,
+        items: result.damage_items?.length,
+        severity: result.overall_severity,
+      });
       
       setAssessmentResult(result);
-      setValidationResult(result.validation);
+      setValidationResult(result.validation_warnings ?? []);
       setShowResults(true);
       onAssessmentComplete(result);
     } catch (err: any) {
-      // Check if it's a validation error (400)
-      if (err.message?.includes('Validation failed') || err.message?.includes('400')) {
+      // Parse structured backend error if available
+      let errMessage = err.message || 'Assessment failed. Please try again.';
+      const errDetail = (() => { try { return JSON.parse(err.message); } catch { return null; } })();
+      if (errDetail?.error === 'openai_not_configured') {
+        errMessage = 'OpenAI API key is not configured. Please add OPENAI_API_KEY to backend/.env and restart the backend.';
+      } else if (errDetail?.error === 'openai_assessment_failed') {
+        errMessage = `OpenAI assessment failed: ${errDetail.message}`;
+      } else if (errMessage.includes('validation_failed') || err.message?.includes('400')) {
         try {
-          // Try to parse the error response
-          const errorData = JSON.parse(err.message.replace('HTTP 400: ', ''));
+          const errorData = JSON.parse(err.message.replace(/^HTTP 400: /, ''));
           setValidationResult(errorData.validation);
           onValidationError(errorData.validation);
+          return;
         } catch {
-          onError(err.message);
+          // fall through
         }
-      } else {
-        onError(err.message || 'Assessment failed. Please try again.');
       }
+      onError(errMessage);
     } finally {
       setAssessing(false);
     }
-  }, [allViewsUploaded, viewStates, confidenceThreshold, imageSize, onAssessmentComplete, onError, onValidationError]);
+  }, [allViewsUploaded, viewStates, vehicleInfo, onAssessmentComplete, onError, onValidationError]);
 
   const resetAll = useCallback(() => {
     Object.values(viewStates).forEach(state => {
@@ -444,16 +491,16 @@ export function FourViewUpload({
             {/* Summary Card */}
             <Card className={cn(
               'border-2',
-              assessmentResult.review_required ? 'border-amber-500/50 bg-amber-500/5' : 'border-success-500/50 bg-success-500/5'
+              assessmentResult.human_review_required ? 'border-amber-500/50 bg-amber-500/5' : 'border-success-500/50 bg-success-500/5'
             )}>
               <CardContent className="pt-6 space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <div className={cn(
                       'flex h-12 w-12 items-center justify-center rounded-xl',
-                      assessmentResult.review_required ? 'bg-amber-500/20 border border-amber-500/30' : 'bg-success-500/20 border border-success-500/30'
+                      assessmentResult.human_review_required ? 'bg-amber-500/20 border border-amber-500/30' : 'bg-success-500/20 border border-success-500/30'
                     )}>
-                      {assessmentResult.review_required ? (
+                      {assessmentResult.human_review_required ? (
                         <AlertCircle className="h-6 w-6 text-amber-400" />
                       ) : (
                         <CheckCircle className="h-6 w-6 text-success-400" />
@@ -461,15 +508,15 @@ export function FourViewUpload({
                     </div>
                     <div>
                       <h3 className="font-bold text-graphite-100">
-                        {assessmentResult.review_required ? 'Review Required' : 'Assessment Complete'}
+                        {assessmentResult.human_review_required ? 'Review Recommended' : 'OpenAI Vision Assessment Complete'}
                       </h3>
                       <p className="text-sm text-graphite-400">
                         {assessmentResult.damage_summary}
                       </p>
                     </div>
                   </div>
-                  <Badge variant={assessmentResult.review_required ? 'warning' : 'success'} className="text-sm">
-                    {assessmentResult.severity.toUpperCase()}
+                  <Badge variant={assessmentResult.human_review_required ? 'warning' : 'success'} className="text-sm">
+                    {assessmentResult.overall_severity.toUpperCase()}
                   </Badge>
                 </div>
 
@@ -479,8 +526,8 @@ export function FourViewUpload({
                     <p className="font-medium text-graphite-100">{assessmentResult.primary_component}</p>
                   </div>
                   <div className="rounded-xl border border-graphite-700 bg-graphite-900/50 p-4 text-center">
-                    <p className="text-xs text-graphite-500 uppercase tracking-wider mb-1">Total Detections</p>
-                    <p className="font-bold text-2xl text-electric-400">{assessmentResult.total_detections}</p>
+                    <p className="text-xs text-graphite-500 uppercase tracking-wider mb-1">Unique Components</p>
+                    <p className="font-bold text-2xl text-electric-400">{assessmentResult.total_unique_components}</p>
                   </div>
                   <div className="rounded-xl border border-graphite-700 bg-graphite-900/50 p-4 text-center">
                     <p className="text-xs text-graphite-500 uppercase tracking-wider mb-1">Est. Repair Cost</p>
@@ -496,65 +543,37 @@ export function FourViewUpload({
               </CardContent>
             </Card>
 
-            {/* Detection by View */}
+            {/* Damage Items List */}
             <div className="space-y-4">
               <h4 className="font-medium text-graphite-100 flex items-center gap-2">
                 <Camera className="h-5 w-5 text-electric-400" />
-                Damage Detection by View
+                Evidence-Grounded Damage Items ({assessmentResult.damage_items.length})
               </h4>
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                {REQUIRED_VIEWS.map((view) => {
-                  const viewResult = assessmentResult.views[view.id];
-                  const annotatedUrl = viewResult.annotated_image_base64
-                    ? base64ToDataUrl(viewResult.annotated_image_base64)
-                    : null;
-
-                  return (
-                    <Card key={view.id} className="border-graphite-700 bg-graphite-900/50 overflow-hidden">
-                      <div className="px-4 py-3 border-b border-graphite-700 flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span className={cn('flex h-7 w-7 items-center justify-center rounded-lg text-lg', view.bgColor)}>
-                            {view.icon}
-                          </span>
-                          <span className="font-medium text-graphite-100">{view.label}</span>
-                        </div>
-                        <Badge variant={viewResult.detection_count > 0 ? 'default' : 'secondary'}>
-                          {viewResult.detection_count} detections
+              <div className="grid gap-4 sm:grid-cols-2">
+                {assessmentResult.damage_items.length === 0 ? (
+                  <p className="text-sm text-graphite-500">No damage detected in submitted images</p>
+                ) : (
+                  assessmentResult.damage_items.map((item, i) => (
+                    <Card key={item.itemId || i} className="border-graphite-700 bg-graphite-900/50 p-4 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-graphite-100">{item.component}</span>
+                        <Badge variant={item.severity === 'severe' ? 'destructive' : item.severity === 'moderate' ? 'warning' : 'default'}>
+                          {item.severity}
                         </Badge>
                       </div>
-                      <div className="relative aspect-video overflow-hidden">
-                        {annotatedUrl ? (
-                          <img
-                            src={annotatedUrl}
-                            alt={`${view.label} annotated`}
-                            className="w-full h-full object-cover"
-                          />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-graphite-500">
-                            No annotated image
-                          </div>
-                        )}
-                      </div>
-                      <div className="p-3 space-y-2 max-h-40 overflow-y-auto">
-                        {viewResult.detections.length === 0 ? (
-                          <p className="text-sm text-graphite-500">No damage detected</p>
-                        ) : (
-                          viewResult.detections.map((det, i) => (
-                            <div key={i} className="flex items-center justify-between text-sm p-2 rounded bg-graphite-800/50">
-                              <span className="text-graphite-300">{det.damage_type}</span>
-                              <span className="font-mono text-electric-400">{(det.confidence * 100).toFixed(1)}%</span>
-                            </div>
-                          ))
-                        )}
+                      <p className="text-xs text-graphite-400">{item.evidenceDescription}</p>
+                      <div className="flex items-center justify-between text-xs pt-2 border-t border-graphite-800">
+                        <span className="text-electric-400 font-mono">₹{item.costEstimateMin.toLocaleString()}–₹{item.costEstimateMax.toLocaleString()}</span>
+                        <span className="text-graphite-500">Views: {(item.evidenceViews || []).join(', ')}</span>
                       </div>
                     </Card>
-                  );
-                })}
+                  ))
+                )}
               </div>
             </div>
 
             {/* Review Flags */}
-            {assessmentResult.review_required && assessmentResult.review_flags.length > 0 && (
+            {assessmentResult.human_review_required && assessmentResult.human_review_reasons.length > 0 && (
               <Card className="border-amber-500/50 bg-amber-500/5">
                 <CardContent className="pt-6">
                   <h4 className="font-medium text-amber-400 flex items-center gap-2 mb-3">
@@ -562,11 +581,9 @@ export function FourViewUpload({
                     Review Flags
                   </h4>
                   <div className="space-y-2">
-                    {assessmentResult.review_flags.map((flag, i) => (
+                    {assessmentResult.human_review_reasons.map((reason, i) => (
                       <div key={i} className="text-sm text-graphite-300 p-3 rounded bg-graphite-900/50 border border-amber-500/20">
-                        <span className="font-mono text-amber-400">{flag.code.replace(/_/g, ' ')}</span>
-                        <span className="text-graphite-500 mx-2">|</span>
-                        <span>{flag.message}</span>
+                        <span>{reason}</span>
                       </div>
                     ))}
                   </div>

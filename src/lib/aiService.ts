@@ -21,6 +21,19 @@ export interface AIAnalysisRequest {
   chatHistory?: Array<{ sender: 'user' | 'bot'; text: string }>;
   apiKey?: string;
   provider?: 'gemini' | 'openai' | 'rule-based';
+  // Structured damage items from the OpenAI assessment (optional but improves negotiation accuracy)
+  damageItems?: Array<{
+    component: string;
+    damageType: string;
+    severity: string;
+    status: string;
+    recommendation: string;
+    costEstimateMin: number;
+    costEstimateMax: number;
+    evidenceDescription?: string;
+  }>;
+  overallReasoning?: string;
+  executionMode?: string;
 }
 
 export interface AIAnalysisResponse {
@@ -168,11 +181,26 @@ export async function generateAINegotiationResponse(
   const apiKey = req.apiKey || localStorage.getItem('claimpilot_llm_key') || '';
   const provider = req.provider || (localStorage.getItem('claimpilot_llm_provider') as any) || (apiKey.startsWith('AIza') ? 'gemini' : apiKey.startsWith('sk-') ? 'openai' : 'rule-based');
 
+  // Build structured damage detail block when items are available
+  const damageDetail = (req.damageItems && req.damageItems.length > 0)
+    ? `\nDetailed Damage Findings (${req.damageItems.length} unique component(s), assessed by OpenAI vision):\n` +
+      req.damageItems.map((it, i) =>
+        `  ${i + 1}. ${it.component} — ${it.damageType} (${it.severity}, ${it.status})` +
+        (it.recommendation ? `, recommended: ${it.recommendation}` : '') +
+        (it.costEstimateMin > 0 ? `, est. ₹${it.costEstimateMin.toLocaleString('en-IN')}–₹${it.costEstimateMax.toLocaleString('en-IN')}` : '') +
+        (it.evidenceDescription ? `\n     Evidence: ${it.evidenceDescription.slice(0, 100)}` : '')
+      ).join('\n')
+    : '';
+
+  const reasoningNote = req.overallReasoning
+    ? `\nAI Assessor Reasoning: ${req.overallReasoning.slice(0, 300)}`
+    : '';
+
   const systemContext = `You are ClaimPilot AI, a knowledgeable, professional motor insurance settlement adjuster assistant.
 You are negotiating a fast cash settlement with a claimant for vehicle damage.
 Vehicle: ${req.vehicle.company || 'Unknown'} ${req.vehicle.model || 'Vehicle'}.
 Reported Incident: ${req.vehicle.causeOfDamage || 'Accident collision'}.
-Assessed Damage by Computer Vision: ${req.damageSummary} (Severity: ${req.severity}, Component: ${req.primaryComponent}).
+Assessed Damage by Computer Vision: ${req.damageSummary} (Severity: ${req.severity}, Component: ${req.primaryComponent}).${damageDetail}${reasoningNote}
 Estimated Garage Repair Cost: ₹${req.costMin.toLocaleString('en-IN')} - ₹${req.costMax.toLocaleString('en-IN')}.
 Current Permitted Settlement Range: ₹${req.settlementMin.toLocaleString('en-IN')} to ₹${req.settlementMax.toLocaleString('en-IN')}.
 Current Offer: ₹${req.settlementOffer.toLocaleString('en-IN')}.
@@ -190,7 +218,8 @@ Guidelines:
 4. If they ask why the cash offer is lower than repair cost: explain standard insurer settlement formulas (deductibles, retail labor vs negotiated rates, depreciation).
 5. If they accept or agree: confirm clearly and prompt them to finalize.
 6. If cause of damage suggests policy exclusion (e.g., wear and tear, intentional damage, racing), recommend escalation to human review.
-7. Always keep replies concise (under 3 sentences).`;
+7. Reference specific damaged components by name when explaining the offer — don't be vague.
+8. Always keep replies concise (under 3 sentences).`;
 
   if (provider === 'gemini' && apiKey) {
     try {

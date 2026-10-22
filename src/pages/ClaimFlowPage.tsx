@@ -16,7 +16,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   CinematicBackground,
   CSSWheel,
-  FourViewInference,
+  FourViewUpload,
   VideoFourViewInference,
   DamageAnnotation,
   FuturisticChat,
@@ -24,8 +24,7 @@ import {
   StageIndicator,
   LoadingOverlay,
 } from '../components/cinematic';
-import { cn, revokeObjectURL, getFileSizeString, generateId, formatNumber, assessFourView, assessHybrid, type DamageDetection, type ViewResult, type VideoFourViewAssessmentResponse } from '../lib/utils';
-import { type Detection } from '../lib/yoloInference';
+import { cn, revokeObjectURL, getFileSizeString, generateId, formatNumber, type ViewResult, type VideoFourViewAssessmentResponse, type DirectAssessmentResponse, type NegotiateResponse, negotiate, generateReportFromBackend } from '../lib/utils';
 import { generateAINegotiationResponse, generateDamageReport, type DamageReportRequest, type DamageReportResponse, type SettlementBreakdown } from '../lib/aiService';
 import { Card, CardContent, CardFooter } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
@@ -314,8 +313,8 @@ export function ClaimFlowPage() {
   const [previousStage, setPreviousStage] = useState<WorkflowStage | null>(null);
   const [assessment, setAssessment] = useState<AssessmentResult | null>(null);
   const [assessmentViews, setAssessmentViews] = useState<Record<string, ViewResult> | null>(null);
-  const [assessmentProgress, setAssessmentProgress] = useState(0);
-  const [assessmentStep, setAssessmentStep] = useState(0);
+  const [assessmentProgress] = useState(100);
+  const [assessmentStep] = useState(2);
 
   // Vehicle info state
   const [vehicleInfo, setVehicleInfo] = useState({
@@ -370,14 +369,12 @@ export function ClaimFlowPage() {
   // Report state
   const [damageReport, setDamageReport] = useState<DamageReportResponse | null>(null);
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+  const [confirmedClaimRef, setConfirmedClaimRef] = useState<string>('');
+  // Structured damage items from the OpenAI direct assessment (for richer negotiation context)
+  const [assessmentDamageItems, setAssessmentDamageItems] = useState<DirectAssessmentResponse['damage_items']>([]);
+  const [assessmentReasoning, setAssessmentReasoning] = useState<string>('');
   
-  // Four-view state (synced with FourViewInference)
-  const [viewStates, setViewStates] = useState<Record<string, { file: File | null; preview: string | null }>>({
-    top: { file: null, preview: null },
-    bottom: { file: null, preview: null },
-    left: { file: null, preview: null },
-    right: { file: null, preview: null },
-  });
+  // Four-view state (synced with FourViewUpload)
   const fourViewFilesRef = useRef<Record<string, File | null>>({
     top: null,
     bottom: null,
@@ -393,6 +390,8 @@ export function ClaimFlowPage() {
   const [initialMessageSent, setInitialMessageSent] = useState(false);
   const [showLightbox, setShowLightbox] = useState<UploadedPhoto | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  // Ref to avoid stale-closure bug when calling generateDamageReportForClaim from setTimeout
+  const generateReportRef = useRef<((claimRef: string, finalAmount: number) => Promise<void>) | null>(null);
 
   // Assessment steps for simulated processing
   const assessmentSteps = [
@@ -407,6 +406,11 @@ export function ClaimFlowPage() {
       photos.forEach(p => revokeObjectURL(p.preview));
     };
   }, [photos]);
+
+  // Keep ref in sync with latest generateDamageReportForClaim so setTimeout always calls the fresh version
+  useEffect(() => {
+    generateReportRef.current = generateDamageReportForClaim;
+  }, [generateDamageReportForClaim]);
 
   // Scroll to bottom of chat
   useEffect(() => {
@@ -423,151 +427,81 @@ export function ClaimFlowPage() {
 
   const handleFilesChange = useCallback((files: Record<string, File | null>) => {
     fourViewFilesRef.current = files;
-    // Sync viewStates with file info for hybrid assessment
-    const newViewStates: Record<string, { file: File | null; preview: string | null }> = {};
-    for (const view of REQUIRED_VIEWS) {
-      const file = files[view];
-      newViewStates[view] = {
-        file,
-        preview: file ? URL.createObjectURL(file) : null,
-      };
-    }
-    setViewStates(newViewStates);
   }, []);
 
-  // Hybrid AI Assessment handler (local YOLO + cloud multimodal reasoning)
-  const handleHybridAssessmentComplete = useCallback(async (localResult: {
-    views: Record<string, {
-      detections: Detection[];
-      annotatedImage: string | null;
-      processingTime: number;
-    }>;
-    totalDetections: number;
-    primaryComponent: string;
-    damageSummary: string;
-    severity: 'minor' | 'moderate' | 'severe' | 'uncertain';
-    estimatedRepairCostMin: number;
-    estimatedRepairCostMax: number;
-    settlementOffer: number;
-    settlementMin: number;
-    settlementMax: number;
-    reviewRequired: boolean;
-    reviewFlags: Array<{ code: string; view: string; message: string }>;
-    limitations: string[];
-  }) => {
-    // First, get the four-view assessment from backend to get validated detections
-    try {
-      setAssessmentProgress(80);
-      setAssessmentStep(3);
-      
-      // Convert local detections to backend format
-      const fourViewRequest = {
-        top: viewStates.top.file!,
-        bottom: viewStates.bottom.file!,
-        left: viewStates.left.file!,
-        right: viewStates.right.file!,
-        confidence_threshold: 0.25,
-        image_size: 640,
+  // Direct OpenAI assessment handler — called by FourViewUpload after /assess/direct succeeds
+  const handleFourViewAssessmentComplete = useCallback((directResult: DirectAssessmentResponse) => {
+    // Build assessment from the OpenAI direct result (already deduplicated, evidence-grounded)
+    const severity = (directResult.overall_severity as Severity) || 'uncertain';
+
+    // Build a human-readable damage summary from the structured items
+    const activeItems = directResult.damage_items ?? [];
+    const itemSummary = activeItems.length > 0
+      ? activeItems.map(it =>
+          `${it.component} (${it.damageType}, ${it.severity}${it.status === 'suspected' ? ' — suspected' : ''})`
+        ).join('; ')
+      : 'No visible damage identified';
+
+    // Execution mode label
+    const modeLabel: Record<string, string> = {
+      openai_vision: 'OpenAI GPT-4o Vision',
+      openai_vision_with_yolo_support: 'OpenAI Vision + YOLO',
+      local_yolo_fallback: 'Local YOLO (OpenAI unavailable)',
+      assessment_failed: 'Assessment failed',
+    };
+    const repairApproach = modeLabel[directResult.execution_mode] ?? directResult.execution_mode;
+
+    // Build explanation combining reasoning + deduplication notes
+    const dupNotes = (directResult.duplicates_resolved ?? []).map(d => d.description).join('; ');
+    const explanation = [
+      directResult.overall_reasoning,
+      activeItems.length > 0
+        ? `${activeItems.length} unique component(s) identified.`
+        : 'No damage confirmed from submitted images.',
+      dupNotes ? `Deduplication: ${dupNotes}` : '',
+      directResult.human_review_required
+        ? `Human review recommended: ${directResult.human_review_reasons.join('; ')}`
+        : '',
+    ].filter(Boolean).join(' ');
+
+    const data: AssessmentData = {
+      component: directResult.primary_component || 'Vehicle',
+      damageType: itemSummary,
+      severity,
+      costMin: directResult.estimated_repair_cost_min,
+      costMax: directResult.estimated_repair_cost_max,
+      repairApproach,
+      explanation,
+      settlementOffer: directResult.settlement_offer,
+      settlementMin: directResult.settlement_min,
+      settlementMax: directResult.settlement_max,
+    };
+
+    setAssessment({ type: severity, data });
+    setAssessmentDamageItems(activeItems);
+    setAssessmentReasoning(directResult.overall_reasoning || '');
+
+    // Build views data for DamageAnnotation from damage items
+    // Map each item's evidence views to ViewResult detections
+    const viewsData: Record<string, ViewResult> = {};
+    for (const view of REQUIRED_VIEWS) {
+      const viewItems = activeItems.filter(it =>
+        (it.evidenceViews ?? []).includes(view)
+      );
+      viewsData[view] = {
+        detection_count: viewItems.length,
+        detections: viewItems.map(it => ({
+          damage_type: it.damageType || 'damage',
+          confidence: it.confidence ?? 0.5,
+          bounding_box_xyxy: [],
+        })),
+        annotated_image_base64: undefined,
       };
-      
-      // Call backend four-view assessment to get validated detections
-      const backendResult = await assessFourView(fourViewRequest);
-      
-      // Now call hybrid AI with backend detections and images
-      setAssessmentProgress(90);
-      setAssessmentStep(4);
-      
-      // Convert files to base64
-      const viewsBase64: Record<string, string> = {};
-      for (const view of REQUIRED_VIEWS) {
-        const file = fourViewFilesRef.current[view]!;
-        viewsBase64[view] = await fileToBase64(file);
-      }
-      
-      // Convert detections to hybrid format
-      const detections: Record<string, DamageDetection[]> = {};
-      for (const view of REQUIRED_VIEWS) {
-        detections[view] = backendResult.views[view].detections;
-      }
-      
-      const hybridResult = await assessHybrid({
-        vehicle: {
-          make: vehicleInfo.company,
-          model: vehicleInfo.model,
-          year: vehicleInfo.year ? parseInt(vehicleInfo.year) : undefined,
-          variant: vehicleInfo.variant,
-        },
-        views: viewsBase64,
-        detections,
-        confidence_threshold: 0.25,
-        image_size: 640,
-      });
-      
-      // Build assessment data from hybrid result
-      const data: AssessmentData = {
-        component: hybridResult.primary_component,
-        damageType: hybridResult.damage_summary,
-        severity: hybridResult.severity,
-        costMin: hybridResult.estimated_repair_cost_min,
-        costMax: hybridResult.estimated_repair_cost_max,
-        repairApproach: 'Hybrid AI (YOLO + Multimodal)',
-        explanation: `${hybridResult.overall_reasoning} AI Confidence: ${(hybridResult.confidence * 100).toFixed(0)}%. ${hybridResult.damage_items.length} damage items identified with multimodal verification.`,
-        settlementOffer: hybridResult.settlement_offer,
-        settlementMin: hybridResult.settlement_min,
-        settlementMax: hybridResult.settlement_max,
-      };
-      
-      setAssessment({ type: hybridResult.severity, data });
-      // Store views data for DamageAnnotation
-      const viewsData: Record<string, ViewResult> = {};
-      for (const view of REQUIRED_VIEWS) {
-        viewsData[view] = {
-          detection_count: backendResult.views[view].detection_count,
-          detections: backendResult.views[view].detections,
-          annotated_image_base64: backendResult.views[view].annotated_image_base64,
-        };
-      }
-      setAssessmentViews(viewsData);
-      setPreviousStage('assessing');
-      setStage('assessment');
-    } catch (error: any) {
-      console.warn('Hybrid assessment failed, using local result:', error);
-      // Fallback to local result
-      const data: AssessmentData = {
-        component: localResult.primaryComponent,
-        damageType: localResult.damageSummary,
-        severity: localResult.severity,
-        costMin: localResult.estimatedRepairCostMin,
-        costMax: localResult.estimatedRepairCostMax,
-        repairApproach: 'Local AI detection (hybrid unavailable)',
-        explanation: `Local AI assessment detected ${localResult.totalDetections} damage instance(s). ${localResult.damageSummary}. Settlement calculated using local inference.`,
-        settlementOffer: localResult.settlementOffer,
-        settlementMin: localResult.settlementMin,
-        settlementMax: localResult.settlementMax,
-      };
-      
-      setAssessment({ type: localResult.severity, data });
-      // Store local inference views data - convert to ViewResult format
-      const localViewsData: Record<string, ViewResult> = {};
-      for (const view of REQUIRED_VIEWS) {
-        const viewData = localResult.views[view];
-        if (viewData) {
-          localViewsData[view] = {
-            detection_count: viewData.detections.length,
-            detections: viewData.detections.map(det => ({
-              damage_type: det.className,
-              confidence: det.confidence,
-              bounding_box_xyxy: det.bbox,
-            })),
-            annotated_image_base64: viewData.annotatedImage ?? undefined,
-          };
-        }
-      }
-      setAssessmentViews(localViewsData);
-      setPreviousStage('assessing');
-      setStage('assessment');
     }
-  }, [vehicleInfo]);
+    setAssessmentViews(viewsData);
+    setPreviousStage('assessing');
+    setStage('assessment');
+  }, []);
 
   // Video + Four-View Assessment handler (10 video frames + 4 photos = 14 images)
   const handleVideoFourViewComplete = useCallback(async (backendResult: VideoFourViewAssessmentResponse) => {
@@ -579,8 +513,8 @@ export function ClaimFlowPage() {
         severity: backendResult.severity,
         costMin: backendResult.estimated_repair_cost_min,
         costMax: backendResult.estimated_repair_cost_max,
-        repairApproach: 'Collective AI (Video + 4-View)',
-        explanation: `Collective assessment from ${backendResult.total_detections} detection(s) across 14 images (10 video frames + 4 photos). ${backendResult.damage_summary}. Settlement calculated using local inference.`,
+        repairApproach: 'OpenAI Vision (Video + 4-View)',
+        explanation: `OpenAI GPT-4o-mini assessed ${backendResult.total_detections} unique damage item(s) across 14 images (10 video frames + 4 photos). ${backendResult.damage_summary}`,
         settlementOffer: backendResult.settlement_offer,
         settlementMin: backendResult.settlement_min,
         settlementMax: backendResult.settlement_max,
@@ -622,6 +556,32 @@ export function ClaimFlowPage() {
       }
       
       setAssessmentViews(viewsData);
+
+      // Build structured damage items from the video result's all_detections for settlement context
+      // These are already aggregated/deduplicated by the backend OpenAI call
+      const videoItems = (backendResult.all_detections ?? [])
+        .filter((d: any) => d.status === 'confirmed' || d.status === 'suspected' || !d.status)
+        .map((d: any, i: number) => ({
+          component: d.component || backendResult.primary_component || 'Vehicle Component',
+          damageType: d.damage_type || 'damage',
+          severity: d.severity || backendResult.severity,
+          status: d.status || 'confirmed',
+          recommendation: d.recommendation || 'inspect',
+          costEstimateMin: 0,
+          costEstimateMax: 0,
+          evidenceDescription: `Detected in video + photo assessment (confidence: ${((d.confidence ?? 0.5) * 100).toFixed(0)}%)`,
+        }));
+
+      // Deduplicate by component name — only keep unique components
+      const seenComponents = new Set<string>();
+      const uniqueVideoItems = videoItems.filter((it: any) => {
+        if (seenComponents.has(it.component)) return false;
+        seenComponents.add(it.component);
+        return true;
+      });
+
+      setAssessmentDamageItems(uniqueVideoItems);
+      setAssessmentReasoning(backendResult.damage_summary || '');
       setPreviousStage('assessing');
       setStage('assessment');
     } catch (error: any) {
@@ -630,20 +590,6 @@ export function ClaimFlowPage() {
       setTimeout(() => setErrors(prev => { const n = {...prev}; delete n.assessment; return n; }), 8000);
     }
   }, [setErrors]);
-
-  const fileToBase64 = (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const result = reader.result as string;
-        // Remove data URL prefix
-        const base64 = result.split(',')[1];
-        resolve(base64);
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-  };
 
   // Helper to convert file to base64
   const addMessage = useCallback((message: Omit<ChatMessage, 'id' | 'timestamp'>) => {
@@ -654,55 +600,89 @@ export function ClaimFlowPage() {
     }]);
   }, []);
 
-  const handleSendMessage = useCallback(async () => {
-    if (!chatInput.trim() || isBotTyping) return;
-    
-    const userText = chatInput.trim();
-    setChatInput('');
+  const handleHumanReview = useCallback(() => {
+    setPreviousStage('assessment');
+    setStage('humanReview');
+    setInitialMessageSent(false);
+    addMessage({
+      sender: 'bot',
+      text: 'Your request for human review has been logged. A claims adjuster will contact you within 2 business days. You can also upload clearer photos in the meantime.',
+    });
+  }, [addMessage]);
+
+  const handleSendMessage = useCallback(async (overrideText?: string) => {
+    const userText = (overrideText ?? chatInput).trim();
+    if (!userText || isBotTyping) return;
+
+    if (!overrideText) setChatInput('');
     addMessage({ sender: 'user', text: userText });
     setIsBotTyping(true);
 
     const assessmentData = assessment?.data;
     if (!assessmentData) {
       setIsBotTyping(false);
+      addMessage({ sender: 'bot', text: 'Assessment data is not available. Please complete the vehicle inspection first.' });
       return;
     }
 
     const lowerText = userText.toLowerCase();
 
-    // Call hybrid AI service (Gemini / OpenAI / Intelligent Fallback)
-    const aiRes = await generateAINegotiationResponse({
-      vehicle: vehicleInfo,
-      damageSummary: assessmentData.damageType,
-      severity: assessmentData.severity,
-      primaryComponent: assessmentData.component,
-      costMin: assessmentData.costMin,
-      costMax: assessmentData.costMax,
-      settlementOffer: currentOffer || assessmentData.settlementOffer,
-      settlementMin: assessmentData.settlementMin,
-      settlementMax: assessmentData.settlementMax,
-      userMessage: userText,
-    });
+    try {
+      const res = await negotiate({
+        vehicle_company: vehicleInfo.company,
+        vehicle_model: vehicleInfo.model,
+        vehicle_year: vehicleInfo.year,
+        cause_of_damage: vehicleInfo.causeOfDamage,
+        damage_summary: assessmentData.damageType,
+        severity: assessmentData.severity,
+        primary_component: assessmentData.component,
+        cost_min: assessmentData.costMin,
+        cost_max: assessmentData.costMax,
+        settlement_offer: currentOffer || assessmentData.settlementOffer,
+        settlement_min: assessmentData.settlementMin,
+        settlement_max: assessmentData.settlementMax,
+        user_message: userText,
+        chat_history: messages.map(m => ({ sender: m.sender, text: m.text })),
+        damage_items: assessmentDamageItems as any,
+        overall_reasoning: assessmentReasoning,
+      });
 
-    setIsBotTyping(false);
+      setIsBotTyping(false);
+      addMessage({
+        sender: 'bot',
+        text: res.message,
+        isOffer: res.is_offer,
+        offerAmount: res.new_offer,
+      });
 
-    addMessage({
-      sender: 'bot',
-      text: aiRes.message,
-      isOffer: aiRes.isOffer,
-      offerAmount: aiRes.newOffer,
-    });
-
-    if (aiRes.newOffer) {
-      setCurrentOffer(aiRes.newOffer);
-      if (lowerText.includes('accept') || lowerText.includes('agree') || lowerText.includes('confirm')) {
-        setOfferAccepted(true);
-        setChatStage('confirmed');
-      } else {
-        setChatStage('negotiating');
+      if (res.new_offer) {
+        setCurrentOffer(res.new_offer);
+        if (lowerText.includes('accept') || lowerText.includes('agree') || lowerText.includes('confirm')) {
+          setOfferAccepted(true);
+          setChatStage('confirmed');
+        } else {
+          setChatStage('negotiating');
+        }
       }
+
+      if (res.exclusion_detected && res.recommendation === 'escalate') {
+        handleHumanReview();
+      }
+
+    } catch (err: any) {
+      setIsBotTyping(false);
+      console.error('Negotiation error:', err);
+      const errMsg: string = err?.message ?? '';
+      const isConfigErr = errMsg.includes('503') || errMsg.includes('not configured');
+      addMessage({
+        sender: 'bot',
+        text: isConfigErr
+          ? 'The negotiation service is not available. Please ensure the backend is running and OPENAI_API_KEY is set in backend/.env.'
+          : `Could not process your message — please try again. (${errMsg.slice(0, 80)})`,
+      });
     }
-  }, [chatInput, assessment, currentOffer, addMessage, vehicleInfo]);
+  }, [chatInput, isBotTyping, assessment, currentOffer, messages, vehicleInfo,
+      assessmentDamageItems, assessmentReasoning, addMessage, handleHumanReview]);
 
   const handleConfirmOffer = useCallback(async () => {
     if (!assessment) return;
@@ -779,141 +759,109 @@ export function ClaimFlowPage() {
       isOffer: true,
       offerAmount: finalAmount
     });
+    setConfirmedClaimRef(claimRef);
     setPreviousStage('chat');
     setStage('confirmed');
     
     // Generate detailed damage report after confirmation
-    setTimeout(() => generateDamageReportForClaim(claimRef, finalAmount), 500);
+    setTimeout(() => generateReportRef.current?.(claimRef, finalAmount), 500);
   }, [assessment, currentOffer, addMessage, vehicleInfo]);
 
   const generateDamageReportForClaim = useCallback(async (claimRef: string, finalAmount: number) => {
     if (!assessment) return;
-    
+
     setIsGeneratingReport(true);
-    
-    // Calculate settlement breakdown (recreate from assessment data)
+
     const data = assessment.data;
     const grossMin = data.costMin;
     const grossMax = data.costMax;
     const avgGross = (grossMin + grossMax) / 2;
-    
-    // Calculate depreciation
+
+    // Depreciation
     const vehicleAge = vehicleInfo.year ? new Date().getFullYear() - parseInt(vehicleInfo.year) : 5;
-    let depreciationPct = 0;
-    let depreciationReason = '';
-    if (vehicleAge > 10) { depreciationPct = 0.35; depreciationReason = 'Vehicle age > 10 years (high depreciation)'; }
-    else if (vehicleAge > 7) { depreciationPct = 0.25; depreciationReason = 'Vehicle age 7-10 years'; }
-    else if (vehicleAge > 4) { depreciationPct = 0.15; depreciationReason = 'Vehicle age 4-7 years'; }
-    else if (vehicleAge > 1) { depreciationPct = 0.08; depreciationReason = 'Vehicle age 1-4 years'; }
-    else { depreciationPct = 0.03; depreciationReason = 'New vehicle (minimal depreciation)'; }
+    let depreciationPct = vehicleAge > 10 ? 0.35 : vehicleAge > 7 ? 0.25 : vehicleAge > 4 ? 0.15 : vehicleAge > 1 ? 0.08 : 0.03;
+    const depreciationReason = vehicleAge > 10 ? 'Vehicle age > 10 years' : vehicleAge > 7 ? 'Vehicle age 7–10 years' : vehicleAge > 4 ? 'Vehicle age 4–7 years' : vehicleAge > 1 ? 'Vehicle age 1–4 years' : 'New vehicle';
     if (data.severity === 'severe') depreciationPct += 0.05;
     else if (data.severity === 'minor') depreciationPct -= 0.02;
     depreciationPct = Math.max(0.03, Math.min(0.5, depreciationPct));
     const depreciationAmount = Math.round(avgGross * depreciationPct);
-    
-    // Deductible
     const deductibleAmount = 1000;
-    
-    // Exclusions
-    const exclusions: SettlementBreakdown['exclusions'] = [];
-    const exclusionaryCauses = [
-      { keyword: 'wear', description: 'Wear and tear', amount: 0.15 },
-      { keyword: 'tear', description: 'Wear and tear', amount: 0.15 },
-      { keyword: 'rust', description: 'Rust/corrosion', amount: 0.20 },
-      { keyword: 'corrosion', description: 'Rust/corrosion', amount: 0.20 },
-      { keyword: 'mechanical failure', description: 'Mechanical failure', amount: 0.25 },
-      { keyword: 'electrical fault', description: 'Electrical fault', amount: 0.20 },
-      { keyword: 'intentional', description: 'Intentional damage', amount: 0.50 },
-      { keyword: 'racing', description: 'Racing/competition', amount: 0.50 },
-      { keyword: 'drunk', description: 'DUI/impairment', amount: 0.50 },
-      { keyword: 'dui', description: 'DUI/impairment', amount: 0.50 },
-      { keyword: 'under influence', description: 'DUI/impairment', amount: 0.50 },
-      { keyword: 'flood', description: 'Flood damage', amount: 0.30 },
-      { keyword: 'fire', description: 'Fire damage', amount: 0.30 },
-    ];
-    const excludedItems: string[] = [];
-    let totalExclusionPct = 0;
-    for (const exc of exclusionaryCauses) {
-      if (vehicleInfo.causeOfDamage.toLowerCase().includes(exc.keyword)) {
-        excludedItems.push(exc.description);
-        totalExclusionPct += exc.amount;
-      }
-    }
-    if (excludedItems.length > 0) {
-      exclusions.push({
-        amount: Math.round(avgGross * totalExclusionPct),
-        description: `Policy exclusion: ${excludedItems.join(', ')}`,
-        items: excludedItems,
-      });
-    }
-    
-    const exclusionAmount = exclusions.reduce((sum, e) => sum + e.amount, 0);
-    const netSettlement = Math.round(avgGross - depreciationAmount - deductibleAmount - exclusionAmount);
-    
-    const breakdownItems: SettlementBreakdown['breakdownItems'] = [
-      { category: 'Gross Repair Cost', description: `Estimated repair (₹${grossMin.toLocaleString('en-IN')} - ₹${grossMax.toLocaleString('en-IN')})`, amount: Math.round(avgGross), type: 'addition' },
-      { category: 'Depreciation', description: `${depreciationReason} (${Math.round(depreciationPct * 100)}%)`, amount: -depreciationAmount, type: 'deduction' },
-      { category: 'Policy Deductible', description: 'Standard comprehensive deductible', amount: -deductibleAmount, type: 'deduction' },
-      ...exclusions.map(exc => ({ category: 'Policy Exclusion', description: exc.description, amount: -exc.amount, type: 'deduction' as const })),
-      { category: 'Net Cash Settlement', description: 'Final cash settlement offer', amount: netSettlement, type: 'addition' },
-    ];
-    
-    const settlementBreakdown: SettlementBreakdown = {
-      grossRepairCost: { min: grossMin, max: grossMax },
-      depreciation: { amount: depreciationAmount, percentage: Math.round(depreciationPct * 100), reason: depreciationReason },
-      deductible: { amount: deductibleAmount, description: 'Policy deductible (standard comprehensive)' },
-      exclusions,
-      netSettlement,
-      breakdownItems,
-    };
-    
-    // Build request for report generation
-    const reportRequest: DamageReportRequest = {
-      vehicle: {
-        company: vehicleInfo.company,
-        model: vehicleInfo.model,
-        year: vehicleInfo.year,
-        variant: vehicleInfo.variant,
-        causeOfDamage: vehicleInfo.causeOfDamage,
-      },
-      assessment: {
-        component: data.component,
-        damageType: data.damageType,
-        severity: data.severity,
-        costMin: data.costMin,
-        costMax: data.costMax,
-        repairApproach: data.repairApproach,
-        explanation: data.explanation,
-        settlementOffer: data.settlementOffer,
-        settlementMin: data.settlementMin,
-        settlementMax: data.settlementMax,
-      },
-      settlementBreakdown,
-      chatHistory: messages.map(m => ({ sender: m.sender, text: m.text })),
-      finalSettlementAmount: finalAmount,
-      claimReference: claimRef,
-      assessmentViews: assessmentViews ? Object.fromEntries(
-        Object.entries(assessmentViews).map(([k, v]) => [k, {
-          detection_count: v.detection_count,
-          detections: v.detections,
-        }])
-      ) : undefined,
-    };
-    
+    const netSettlement = Math.round(avgGross - depreciationAmount - deductibleAmount);
+
     try {
-      const report = await generateDamageReport(reportRequest);
-      setDamageReport(report);
+      const backendReport = await generateReportFromBackend({
+        claim_reference: claimRef,
+        vehicle_company: vehicleInfo.company,
+        vehicle_model: vehicleInfo.model,
+        vehicle_year: vehicleInfo.year,
+        vehicle_variant: vehicleInfo.variant,
+        cause_of_damage: vehicleInfo.causeOfDamage,
+        component: data.component,
+        damage_type: data.damageType,
+        severity: data.severity,
+        repair_approach: data.repairApproach,
+        explanation: data.explanation,
+        cost_min: grossMin,
+        cost_max: grossMax,
+        settlement_offer: data.settlementOffer,
+        settlement_min: data.settlementMin,
+        settlement_max: data.settlementMax,
+        final_settlement_amount: finalAmount,
+        gross_repair_min: grossMin,
+        gross_repair_max: grossMax,
+        depreciation_amount: depreciationAmount,
+        depreciation_percentage: Math.round(depreciationPct * 100),
+        depreciation_reason: depreciationReason,
+        deductible_amount: deductibleAmount,
+        net_settlement: netSettlement,
+        chat_history: messages.map(m => ({ sender: m.sender, text: m.text })),
+        assessment_views: assessmentViews ? Object.fromEntries(
+          Object.entries(assessmentViews).map(([k, v]) => [k, {
+            detection_count: v.detection_count,
+            detections: v.detections,
+          }])
+        ) : {},
+        damage_items: assessmentDamageItems as any,
+      });
+
+      // Map backend response to the DamageReportResponse shape used by DamageReportView
+      setDamageReport({
+        report: backendReport.report,
+        reportHtml: backendReport.report_html,
+        generatedAt: backendReport.generated_at,
+        claimReference: backendReport.claim_reference,
+      });
       setStage('report');
-    } catch (error) {
-      console.error('Failed to generate damage report:', error);
-      // Fallback to local report
-      const localReport = await generateDamageReport(reportRequest); // This will use local fallback
-      setDamageReport(localReport);
-      setStage('report');
+    } catch (error: any) {
+      console.error('Backend report generation failed, using local fallback:', error);
+      // Last-resort local fallback via aiService
+      try {
+        const { generateDamageReport } = await import('../lib/aiService');
+        const localReport = await generateDamageReport({
+          vehicle: { company: vehicleInfo.company, model: vehicleInfo.model, year: vehicleInfo.year, variant: vehicleInfo.variant, causeOfDamage: vehicleInfo.causeOfDamage },
+          assessment: { component: data.component, damageType: data.damageType, severity: data.severity, costMin: grossMin, costMax: grossMax, repairApproach: data.repairApproach, explanation: data.explanation, settlementOffer: data.settlementOffer, settlementMin: data.settlementMin, settlementMax: data.settlementMax },
+          settlementBreakdown: { grossRepairCost: { min: grossMin, max: grossMax }, depreciation: { amount: depreciationAmount, percentage: Math.round(depreciationPct * 100), reason: depreciationReason }, deductible: { amount: deductibleAmount, description: 'Policy deductible' }, exclusions: [], netSettlement, breakdownItems: [] },
+          chatHistory: messages.map(m => ({ sender: m.sender, text: m.text })),
+          finalSettlementAmount: finalAmount,
+          claimReference: claimRef,
+        });
+        setDamageReport(localReport);
+        setStage('report');
+      } catch (fallbackErr) {
+        console.error('Local fallback also failed:', fallbackErr);
+        // Show report stage with a minimal report so the page is not blank
+        setDamageReport({
+          report: `# Damage Assessment Report\n\n**Claim Reference:** ${claimRef}\n\n**Settlement Amount:** ₹${finalAmount.toLocaleString('en-IN')}\n\n**Vehicle:** ${vehicleInfo.company} ${vehicleInfo.model}\n\n**Damage:** ${data.component} — ${data.damageType} (${data.severity})\n\nReport generation encountered an error. Please download a manual copy of your settlement details.`,
+          reportHtml: `<h1>Damage Assessment Report</h1><p><strong>Claim Reference:</strong> ${claimRef}</p><p><strong>Settlement Amount:</strong> ₹${finalAmount.toLocaleString('en-IN')}</p><p><strong>Vehicle:</strong> ${vehicleInfo.company} ${vehicleInfo.model}</p><p><strong>Damage:</strong> ${data.component} — ${data.damageType} (${data.severity})</p>`,
+          generatedAt: new Date().toISOString(),
+          claimReference: claimRef,
+        });
+        setStage('report');
+      }
     } finally {
       setIsGeneratingReport(false);
     }
-  }, [assessment, vehicleInfo, messages, assessmentViews]);
+  }, [assessment, vehicleInfo, messages, assessmentViews, assessmentDamageItems]);
 
   const handleReset = useCallback(() => {
     photos.forEach(p => revokeObjectURL(p.preview));
@@ -930,29 +878,18 @@ export function ClaimFlowPage() {
     setShowLightbox(null);
     setInitialMessageSent(false);
     // Reset four-view state
-    setViewStates({
-      top: { file: null, preview: null },
-      bottom: { file: null, preview: null },
-      left: { file: null, preview: null },
-      right: { file: null, preview: null },
-    });
     fourViewFilesRef.current = {
       top: null,
       bottom: null,
       left: null,
       right: null,
     };
+    setConfirmedClaimRef('');
+    setDamageReport(null);
+    setIsGeneratingReport(false);
+    setAssessmentDamageItems([]);
+    setAssessmentReasoning('');
   }, [photos]);
-
-  const handleHumanReview = useCallback(() => {
-    setPreviousStage('assessment');
-    setStage('humanReview');
-    setInitialMessageSent(false);
-    addMessage({
-      sender: 'bot',
-      text: 'Your request for human review has been logged. A claims adjuster will contact you within 2 business days. You can also upload clearer photos in the meantime.',
-    });
-  }, [addMessage]);
 
   const handleAddMorePhotos = useCallback(() => {
     setPreviousStage('assessment');
@@ -1377,14 +1314,26 @@ export function ClaimFlowPage() {
                             onInferenceComplete={handleVideoFourViewComplete}
                             onError={handleAIAssessmentError}
                             disabled={stage !== 'upload'}
+                            vehicleInfo={{
+                              company: vehicleInfo.company,
+                              model: vehicleInfo.model,
+                              year: vehicleInfo.year,
+                              causeOfDamage: vehicleInfo.causeOfDamage,
+                            }}
                           />
                         ) : (
-                          <FourViewInference
-                            onInferenceComplete={handleHybridAssessmentComplete}
+                          <FourViewUpload
+                            onAssessmentComplete={handleFourViewAssessmentComplete}
                             onError={handleAIAssessmentError}
                             onValidationError={handleAIValidationError}
                             onFilesChange={handleFilesChange}
                             disabled={stage !== 'upload'}
+                            vehicleInfo={{
+                              company: vehicleInfo.company,
+                              model: vehicleInfo.model,
+                              year: vehicleInfo.year,
+                              causeOfDamage: vehicleInfo.causeOfDamage,
+                            }}
                           />
                         )}
                       </div>
@@ -1546,7 +1495,7 @@ export function ClaimFlowPage() {
                               transition={{ delay: 0.5 }}
                             >
                               <p className="text-xs font-mono text-graphite-400 uppercase tracking-wider">CLAIM REFERENCE</p>
-                              <p className="font-mono text-xl font-semibold text-graphite-100">CP-{generateId('').slice(0, 8).toUpperCase()}</p>
+                              <p className="font-mono text-xl font-semibold text-graphite-100">{confirmedClaimRef || `CP-${generateId('').slice(0, 8).toUpperCase()}`}</p>
                             </motion.div>
                             {assessment && (
                               <motion.div
@@ -1689,3 +1638,4 @@ export function ClaimFlowPage() {
     </div>
   );
 }
+

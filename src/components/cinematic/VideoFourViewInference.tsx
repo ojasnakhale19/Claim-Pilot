@@ -5,7 +5,7 @@ import { Button } from '../ui/Button';
 import { Card, CardContent } from '../ui/Card';
 import { Badge } from '../ui/Badge';
 import { Progress } from '../ui/Progress';
-import { cn, isValidImageFile, isValidVideoFile, getFileSizeString, type VideoFourViewAssessmentResponse } from '../../lib/utils';
+import { cn, isValidImageFile, isValidVideoFile, getFileSizeString, API_BASE_URL, type VideoFourViewAssessmentResponse } from '../../lib/utils';
 
 const REQUIRED_VIEWS = [
   { id: 'top', label: 'Top View', icon: '⬆', desc: 'Elevated view of damaged area', color: 'text-blue-400', bgColor: 'bg-blue-500/10' },
@@ -41,12 +41,19 @@ interface VideoFourViewInferenceProps {
   onInferenceComplete: (result: VideoFourViewAssessmentResponse) => void;
   onError: (error: string) => void;
   disabled?: boolean;
+  vehicleInfo?: {
+    company: string;
+    model: string;
+    year: string;
+    causeOfDamage: string;
+  };
 }
 
 export function VideoFourViewInference({
   onInferenceComplete,
   onError,
   disabled = false,
+  vehicleInfo,
 }: VideoFourViewInferenceProps) {
   const [viewStates, setViewStates] = useState<Record<string, ViewUploadState>>({});
   const [videoState, setVideoState] = useState<VideoUploadState>({
@@ -273,10 +280,14 @@ export function VideoFourViewInference({
       });
       formData.append('confidence_threshold', '0.25');
       formData.append('image_size', '640');
+      if (vehicleInfo?.company) formData.append('vehicle_make', vehicleInfo.company);
+      if (vehicleInfo?.model) formData.append('vehicle_model', vehicleInfo.model);
+      if (vehicleInfo?.year) formData.append('vehicle_year', vehicleInfo.year);
+      if (vehicleInfo?.causeOfDamage) formData.append('cause_of_damage', vehicleInfo.causeOfDamage);
 
       setFrameExtractionProgress(prev => ({ ...prev, message: 'Sending to backend...', progress: 95 }));
 
-      const response = await fetch('http://localhost:8000/assess/video-four-view', {
+      const response = await fetch(`${API_BASE_URL}/assess/video-four-view`, {
         method: 'POST',
         body: formData,
       });

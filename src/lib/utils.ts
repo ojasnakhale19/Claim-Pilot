@@ -174,7 +174,7 @@ export function filterBy<T>(array: T[], predicates: Partial<Record<keyof T, unkn
 }
 
 // ─── API Client ─────────────────────────────────────────────────────────────
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export interface DamageDetection {
   damage_type: string;
@@ -445,6 +445,10 @@ export interface FourViewAssessmentRequest {
   right: File;
   confidence_threshold?: number;
   image_size?: number;
+  vehicle_make?: string;
+  vehicle_model?: string;
+  vehicle_year?: string;
+  cause_of_damage?: string;
 }
 
 export async function assessFourView(request: FourViewAssessmentRequest): Promise<AssessmentResponse> {
@@ -455,6 +459,10 @@ export async function assessFourView(request: FourViewAssessmentRequest): Promis
   formData.append('right', request.right);
   formData.append('confidence_threshold', String(request.confidence_threshold ?? 0.25));
   formData.append('image_size', String(request.image_size ?? 640));
+  if (request.vehicle_make) formData.append('vehicle_make', request.vehicle_make);
+  if (request.vehicle_model) formData.append('vehicle_model', request.vehicle_model);
+  if (request.vehicle_year) formData.append('vehicle_year', request.vehicle_year);
+  if (request.cause_of_damage) formData.append('cause_of_damage', request.cause_of_damage);
 
   const response = await fetch(`${API_BASE_URL}/assess/four-view`, {
     method: 'POST',
@@ -492,6 +500,10 @@ export interface VideoFourViewAssessmentRequest {
   right: File;
   confidence_threshold?: number;
   image_size?: number;
+  vehicle_make?: string;
+  vehicle_model?: string;
+  vehicle_year?: string;
+  cause_of_damage?: string;
 }
 
 export interface VideoFrameResult {
@@ -548,6 +560,10 @@ export async function assessVideoFourView(request: VideoFourViewAssessmentReques
   formData.append('right', request.right);
   formData.append('confidence_threshold', String(request.confidence_threshold ?? 0.25));
   formData.append('image_size', String(request.image_size ?? 640));
+  if (request.vehicle_make) formData.append('vehicle_make', request.vehicle_make);
+  if (request.vehicle_model) formData.append('vehicle_model', request.vehicle_model);
+  if (request.vehicle_year) formData.append('vehicle_year', request.vehicle_year);
+  if (request.cause_of_damage) formData.append('cause_of_damage', request.cause_of_damage);
 
   const response = await fetch(`${API_BASE_URL}/assess/video-four-view`, {
     method: 'POST',
@@ -726,6 +742,183 @@ export async function assessHybrid(request: HybridAssessmentRequest): Promise<Hy
     body: JSON.stringify(request),
   });
   return handleResponse(response);
+}
+
+// ─── Direct OpenAI 4-View Assessment (primary path, no YOLO gate) ───────────
+
+export interface DirectDamageItem {
+  itemId: string;
+  component: string;
+  damageType: string;
+  status: 'confirmed' | 'suspected' | 'uncertain';
+  severity: 'minor' | 'moderate' | 'severe' | 'uncertain';
+  evidenceViews: string[];
+  evidenceDescription: string;
+  confidence: number;
+  recommendation: 'repair' | 'replace' | 'inspect' | 'no_action_needed';
+  repairNotes: string;
+  costEstimateMin: number;
+  costEstimateMax: number;
+  costCurrency: string;
+  costAssumptions: string[];
+}
+
+export interface DirectAssessmentResponse {
+  assessment_id: string;
+  created_at: string;
+  execution_mode: 'openai_vision' | 'openai_vision_with_yolo_support' | 'local_yolo_fallback' | 'assessment_failed';
+  model_name: string;
+  vehicle_make: string;
+  vehicle_model: string;
+  vehicle_year: string;
+  cause_of_damage: string;
+  assessment_status: 'completed' | 'inconclusive' | 'insufficient_evidence';
+  damage_items: DirectDamageItem[];
+  duplicates_resolved: Array<{ description: string; views: string[] }>;
+  overall_severity: 'minor' | 'moderate' | 'severe' | 'uncertain';
+  overall_confidence: number;
+  total_unique_components: number;
+  estimated_repair_cost_min: number;
+  estimated_repair_cost_max: number;
+  settlement_offer: number;
+  settlement_min: number;
+  settlement_max: number;
+  human_review_required: boolean;
+  human_review_reasons: string[];
+  overall_reasoning: string;
+  primary_component: string;
+  damage_summary: string;
+  limitations: string[];
+  review_flags: Array<{ code: string; view: string; message: string }>;
+  validation_warnings: Array<{ code: string; view: string; message: string }>;
+}
+
+export interface DirectAssessmentRequest {
+  top: File;
+  bottom: File;
+  left: File;
+  right: File;
+  vehicle_make?: string;
+  vehicle_model?: string;
+  vehicle_year?: string;
+  cause_of_damage?: string;
+}
+
+export async function assessDirect(request: DirectAssessmentRequest): Promise<DirectAssessmentResponse> {
+  const formData = new FormData();
+  formData.append('top', request.top);
+  formData.append('bottom', request.bottom);
+  formData.append('left', request.left);
+  formData.append('right', request.right);
+  if (request.vehicle_make) formData.append('vehicle_make', request.vehicle_make);
+  if (request.vehicle_model) formData.append('vehicle_model', request.vehicle_model);
+  if (request.vehicle_year) formData.append('vehicle_year', request.vehicle_year);
+  if (request.cause_of_damage) formData.append('cause_of_damage', request.cause_of_damage);
+
+  const response = await fetch(`${API_BASE_URL}/assess/direct`, {
+    method: 'POST',
+    body: formData,
+  });
+  return handleResponse<DirectAssessmentResponse>(response);
+}
+
+// ─── Backend Settlement Negotiation ─────────────────────────────────────────
+
+export interface NegotiateRequest {
+  vehicle_company?: string;
+  vehicle_model?: string;
+  vehicle_year?: string;
+  cause_of_damage?: string;
+  damage_summary: string;
+  severity: string;
+  primary_component: string;
+  cost_min: number;
+  cost_max: number;
+  settlement_offer: number;
+  settlement_min: number;
+  settlement_max: number;
+  user_message: string;
+  chat_history?: Array<{ sender: string; text: string }>;
+  damage_items?: Array<{
+    component: string;
+    damageType: string;
+    severity: string;
+    status: string;
+    recommendation: string;
+    costEstimateMin: number;
+    costEstimateMax: number;
+    evidenceDescription?: string;
+  }>;
+  overall_reasoning?: string;
+}
+
+export interface NegotiateResponse {
+  message: string;
+  new_offer?: number;
+  is_offer: boolean;
+  recommendation?: string;
+  exclusion_detected: boolean;
+  exclusion_reason: string;
+  provider_used: string;
+}
+
+export async function negotiate(request: NegotiateRequest): Promise<NegotiateResponse> {
+  const response = await fetch(`${API_BASE_URL}/negotiate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return handleResponse<NegotiateResponse>(response);
+}
+
+// ─── Backend Report Generation ───────────────────────────────────────────────
+
+export interface GenerateReportRequest {
+  claim_reference: string;
+  vehicle_company?: string;
+  vehicle_model?: string;
+  vehicle_year?: string;
+  vehicle_variant?: string;
+  cause_of_damage?: string;
+  component?: string;
+  damage_type?: string;
+  severity?: string;
+  repair_approach?: string;
+  explanation?: string;
+  cost_min?: number;
+  cost_max?: number;
+  settlement_offer?: number;
+  settlement_min?: number;
+  settlement_max?: number;
+  final_settlement_amount: number;
+  gross_repair_min?: number;
+  gross_repair_max?: number;
+  depreciation_amount?: number;
+  depreciation_percentage?: number;
+  depreciation_reason?: string;
+  deductible_amount?: number;
+  net_settlement?: number;
+  breakdown_items?: Array<{ category: string; description: string; amount: number; type: string }>;
+  exclusions?: Array<{ amount: number; description: string; items: string[] }>;
+  chat_history?: Array<{ sender: string; text: string }>;
+  assessment_views?: Record<string, { detection_count: number; detections: Array<{ damage_type: string; confidence: number; bounding_box_xyxy?: number[] }> }>;
+  damage_items?: Array<Record<string, unknown>>;
+}
+
+export interface GenerateReportResponse {
+  report: string;
+  report_html: string;
+  generated_at: string;
+  claim_reference: string;
+}
+
+export async function generateReportFromBackend(request: GenerateReportRequest): Promise<GenerateReportResponse> {
+  const response = await fetch(`${API_BASE_URL}/report`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  return handleResponse<GenerateReportResponse>(response);
 }
 
 export interface AIProviderStatus {

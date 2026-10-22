@@ -147,23 +147,27 @@ export function parseYOLOOutput(
   iouThreshold: number,
   classNames: string[]
 ): Detection[] {
-  const numBoxes = output.length / (4 + numClasses);
+  // Ultralytics YOLO exports ONNX with shape [1, 4 + numClasses, 8400] (transposed/column-major).
+  const numBoxes = Math.round(output.length / (4 + numClasses));
   const boxes: number[][] = [];
   const scores: number[] = [];
   const classIds: number[] = [];
   
+  const cxOffset = 0 * numBoxes;
+  const cyOffset = 1 * numBoxes;
+  const wOffset  = 2 * numBoxes;
+  const hOffset  = 3 * numBoxes;
+
   for (let i = 0; i < numBoxes; i++) {
-    const baseIdx = i * (4 + numClasses);
-    
-    const cx = output[baseIdx];
-    const cy = output[baseIdx + 1];
-    const w = output[baseIdx + 2];
-    const h = output[baseIdx + 3];
+    const cx = output[cxOffset + i];
+    const cy = output[cyOffset + i];
+    const w  = output[wOffset + i];
+    const h  = output[hOffset + i];
     
     let maxScore = 0;
     let maxClassId = 0;
     for (let c = 0; c < numClasses; c++) {
-      const score = output[baseIdx + 4 + c];
+      const score = output[(4 + c) * numBoxes + i];
       if (score > maxScore) {
         maxScore = score;
         maxClassId = c;

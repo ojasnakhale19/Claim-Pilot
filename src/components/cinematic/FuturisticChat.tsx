@@ -32,7 +32,7 @@ interface FuturisticChatProps {
       severity: string;
     };
   } | null;
-  onSendMessage: () => void;
+  onSendMessage: (overrideText?: string) => void;
   onConfirmOffer: () => void;
   onIncreaseOffer: () => void;
   onEscalate?: () => void;
@@ -56,14 +56,16 @@ function SettlementBreakdownModal({
   onConfirm,
   onEscalate
 }: { 
-  breakdown: SettlementBreakdown; 
+  breakdown: SettlementBreakdown | null; 
   isOpen: boolean; 
   onClose: () => void; 
   onConfirm: () => void;
   onEscalate?: () => void;
 }) {
-  const hasExclusions = breakdown.exclusions && breakdown.exclusions.length > 0;
+  // Guard BEFORE any property access — breakdown may be null while modal is animating closed
   if (!isOpen || !breakdown) return null;
+
+  const hasExclusions = breakdown.exclusions != null && breakdown.exclusions.length > 0;
 
   return (
     <AnimatePresence>
@@ -165,7 +167,7 @@ function SettlementBreakdownModal({
               </div>
 
               {/* Exclusions */}
-              {breakdown.exclusions.length > 0 && (
+              {(breakdown.exclusions ?? []).length > 0 && (
                 <div className="rounded-xl border border-danger-500/30 bg-danger-500/5 p-4">
                   <div className="flex items-center gap-2 mb-2">
                     <AlertTriangle className="h-4 w-4 text-danger-400" />
@@ -229,7 +231,7 @@ function SettlementBreakdownModal({
                 <h4 className="text-xs font-mono text-graphite-400 uppercase tracking-wider">DETAILED BREAKDOWN</h4>
               </div>
               <div className="divide-y divide-graphite-700">
-                {breakdown.breakdownItems.map((item, i) => (
+                {(breakdown.breakdownItems ?? []).map((item, i) => (
                   <motion.div
                     key={i}
                     className="flex items-center justify-between px-4 py-3 gap-4 transition-colors hover:bg-graphite-800/50"
@@ -686,19 +688,19 @@ export function FuturisticChat({
           >
             <QuickReply
               label="Request Higher Offer"
-              onClick={() => { setChatInput('Can you offer a higher settlement?'); onSendMessage(); }}
+              onClick={() => onSendMessage('Can you offer a higher settlement?')}
               icon={<Plus className="h-3.5 w-3.5" />}
               variant="electric"
             />
             <QuickReply
               label="Cost Breakdown"
-              onClick={() => { setChatInput('Show me the cost breakdown'); onSendMessage(); }}
+              onClick={() => onSendMessage('Show me the cost breakdown')}
               icon={<Loader2 className="h-3.5 w-3.5" />}
               variant="cyan"
             />
             <QuickReply
               label="Explain Difference"
-              onClick={() => { setChatInput('Why is the offer lower than repair cost?'); onSendMessage(); }}
+              onClick={() => onSendMessage('Why is the offer lower than repair cost?')}
               icon={<Zap className="h-3.5 w-3.5" />}
               variant="amber"
             />

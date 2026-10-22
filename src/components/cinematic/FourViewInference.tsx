@@ -1,3 +1,16 @@
+/**
+ * @deprecated FourViewInference is RETIRED and no longer used in the main workflow.
+ *
+ * This component ran browser-side YOLO (ONNX) inference and passed raw detection counts
+ * to ClaimFlowPage, which caused the "477 detections / Local AI detection (hybrid unavailable)"
+ * problem: thousands of per-frame bounding boxes were counted as separate physical damages.
+ *
+ * REPLACEMENT: Use FourViewUpload which calls /assess/direct on the backend.
+ * The backend uses OpenAI GPT-4o-mini vision for evidence-grounded, deduplicated assessment.
+ *
+ * This file is kept for reference only. Do NOT re-export it from cinematic/index.ts.
+ */
+
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Camera, X, Loader2, Eye, Zap, AlertCircle, CheckCircle, RotateCcw, Check } from 'lucide-react';
@@ -5,7 +18,7 @@ import { Button } from '../ui/Button';
 import { Card, CardContent } from '../ui/Card';
 import { Badge } from '../ui/Badge';
 import { Progress } from '../ui/Progress';
-import { cn, isValidImageFile, getFileSizeString, formatDamageType } from '../../lib/utils';
+import { cn, isValidImageFile, getFileSizeString, formatDamageType, API_BASE_URL } from '../../lib/utils';
 import { createClaimPilotYOLO, type Detection, type InferenceState, filterValidDetections, VALID_DAMAGE_CLASSES_ARRAY } from '../../lib/yoloInference';
 
 const REQUIRED_VIEWS = [
