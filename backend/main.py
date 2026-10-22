@@ -13,12 +13,16 @@ from typing import Any, Dict, List, Optional
 
 import cv2
 import numpy as np
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field
 from ultralytics import YOLO
+
+# Load environment variables from .env file
+load_dotenv()
 
 # ─── New: Policy-driven Damage Assessment Router ─────────────────────────────
 from damage_assessment import router as damage_assessment_router
