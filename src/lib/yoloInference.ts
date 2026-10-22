@@ -316,14 +316,33 @@ export class YOLOInference {
 }
 
 /**
+ * Valid damage classes for insurance assessment (6 classes matching backend CarDD model)
+ * These are the ONLY classes that should be used for cost estimation and settlement.
+ * Classes like 'crash', 'dislocated_part', 'no_part', 'rub' are NOT valid damage types for insurance.
+ */
+export const VALID_DAMAGE_CLASSES = [
+  'dent',
+  'scratch', 
+  'crack',
+  'glass_shatter',
+  'lamp_broken',
+  'tire_flat'
+] as const;
+
+export type ValidDamageClass = typeof VALID_DAMAGE_CLASSES[number];
+
+/**
+ * Convert readonly tuple to mutable array for function parameters
+ */
+export const VALID_DAMAGE_CLASSES_ARRAY: string[] = [...VALID_DAMAGE_CLASSES];
+
+/**
  * Create a configured YOLO inference instance for the app
- * Classes match the backend YOLO11s CarDD model (10 damage classes)
+ * Uses only the 6 valid damage classes that match the backend YOLO11s CarDD model
  */
 export function createClaimPilotYOLO(
   modelPath: string = '/best.onnx',
-  classNames: string[] = [
-    'crack', 'crash', 'dent', 'dislocated_part', 'glass_shatter', 'lamp_broken', 'no_part', 'rub', 'scratch', 'tire_flat'
-  ]
+  classNames: string[] = VALID_DAMAGE_CLASSES_ARRAY
 ): YOLOInference {
   return new YOLOInference({
     modelPath,
@@ -333,4 +352,18 @@ export function createClaimPilotYOLO(
     classNames,
     executionProviders: ['wasm'],
   });
+}
+
+/**
+ * Check if a detected class is a valid damage type for insurance assessment
+ */
+export function isValidDamageClass(className: string): className is ValidDamageClass {
+  return VALID_DAMAGE_CLASSES.includes(className as ValidDamageClass);
+}
+
+/**
+ * Filter detections to only include valid damage classes for insurance purposes
+ */
+export function filterValidDetections(detections: Detection[]): Detection[] {
+  return detections.filter(d => isValidDamageClass(d.className));
 }

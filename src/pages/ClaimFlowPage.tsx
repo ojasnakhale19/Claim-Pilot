@@ -913,6 +913,19 @@ export function ClaimFlowPage() {
     setCurrentOffer(0);
     setOfferAccepted(false);
     setShowLightbox(null);
+    // Reset four-view state
+    setViewStates({
+      top: { file: null, preview: null },
+      bottom: { file: null, preview: null },
+      left: { file: null, preview: null },
+      right: { file: null, preview: null },
+    });
+    fourViewFilesRef.current = {
+      top: null,
+      bottom: null,
+      left: null,
+      right: null,
+    };
   }, [photos]);
 
   const handleHumanReview = useCallback(() => {

@@ -6,7 +6,7 @@ import { Card, CardContent } from '../ui/Card';
 import { Badge } from '../ui/Badge';
 import { Progress } from '../ui/Progress';
 import { cn, isValidImageFile, getFileSizeString, formatDamageType } from '../../lib/utils';
-import { createClaimPilotYOLO, type Detection, type InferenceState } from '../../lib/yoloInference';
+import { createClaimPilotYOLO, type Detection, type InferenceState, filterValidDetections, VALID_DAMAGE_CLASSES_ARRAY as VALID_DAMAGE_CLASSES } from '../../lib/yoloInference';
 
 const REQUIRED_VIEWS = [
   { id: 'top', label: 'Top View', icon: '⬆', desc: 'Elevated view of damaged area', color: 'text-blue-400', bgColor: 'bg-blue-500/10' },
@@ -202,11 +202,16 @@ export function FourViewInference({
   ) => {
     // Aggregate all detections
     const allDetections = Object.values(viewResults).flatMap(v => v.detections);
-    const totalDetections = allDetections.length;
+    const totalRawDetections = allDetections.length;
 
-    // Count detections by class (using formatted names)
+    // FILTER: Only keep valid damage classes for insurance assessment
+    // Classes like 'crash', 'dislocated_part', 'no_part', 'rub' are NOT valid for insurance
+    const validDetections = filterValidDetections(allDetections);
+    const validDetectionCount = validDetections.length;
+
+    // Count detections by class (using formatted names) - ONLY valid classes
     const detectionCounts: Record<string, { count: number; maxConfidence: number }> = {};
-    allDetections.forEach(d => {
+    validDetections.forEach(d => {
       const formattedName = formatDamageType(d.className);
       if (!detectionCounts[formattedName] || d.confidence > detectionCounts[formattedName].maxConfidence) {
         detectionCounts[formattedName] = { count: 1, maxConfidence: d.confidence };
@@ -227,23 +232,23 @@ export function FourViewInference({
       .map(([type, data]) => `${data.count} ${type}${data.count > 1 ? 's' : ''}`)
       .join(', ') || 'No damage detected';
 
-    // Determine severity based on total detections AND max confidence
-    const maxConfidence = allDetections.reduce((max, d) => d.confidence > max.confidence ? d : max, allDetections[0])?.confidence || 0;
+    // Determine severity based on VALID detections AND max confidence
+    const maxConfidence = validDetections.reduce((max, d) => d.confidence > max.confidence ? d : max, validDetections[0])?.confidence || 0;
     const uniqueDamageTypes = Object.keys(detectionCounts).length;
     
     let severity: 'minor' | 'moderate' | 'severe' | 'uncertain' = 'uncertain';
-    if (totalDetections === 0) {
+    if (validDetectionCount === 0) {
       severity = 'uncertain';
-    } else if (maxConfidence >= 0.7 && (totalDetections >= 3 || uniqueDamageTypes >= 2)) {
+    } else if (maxConfidence >= 0.7 && (validDetectionCount >= 3 || uniqueDamageTypes >= 2)) {
       severity = 'severe';
-    } else if (maxConfidence >= 0.5 || (totalDetections >= 2 && maxConfidence >= 0.4)) {
+    } else if (maxConfidence >= 0.5 || (validDetectionCount >= 2 && maxConfidence >= 0.4)) {
       severity = 'moderate';
     } else {
       severity = 'minor';
     }
 
-    // Calculate costs based on severity and unique damage types (not per detection)
-    // Base cost per severity tier
+    // Calculate costs based on severity and UNIQUE DAMAGE TYPES (not per detection)
+    // This prevents 600+ detections from inflating costs
     type SeverityKey = 'minor' | 'moderate' | 'severe' | 'uncertain';
     const baseCost: Record<SeverityKey, { min: number; max: number }> = {
       minor: { min: 3000, max: 8000 },
@@ -252,11 +257,11 @@ export function FourViewInference({
       uncertain: { min: 5000, max: 15000 },
     };
 
-    // Multiplier based on number of unique damage types (1x, 1.5x, 2x, 2.5x)
+    // Multiplier based on number of UNIQUE damage types (1x, 1.5x, 2x, 2.5x)
     const typeMultiplier = Math.min(1 + (uniqueDamageTypes - 1) * 0.5, 2.5);
     
-    // Additional factor for high detection count in same type (max 1.5x)
-    const detectionFactor = Math.min(1 + (totalDetections - uniqueDamageTypes) * 0.1, 1.5);
+    // Additional factor for high detection count in same type (max 1.5x) - use VALID count only
+    const detectionFactor = Math.min(1 + (validDetectionCount - uniqueDamageTypes) * 0.1, 1.5);
 
     const cost = baseCost[severity] || { min: 5000, max: 15000 };
     const totalMin = Math.round(cost.min * typeMultiplier * detectionFactor);
@@ -267,13 +272,13 @@ export function FourViewInference({
     const settlementMin = Math.round(settlementOffer * 0.85);
     const settlementMax = Math.round(settlementOffer * 1.15);
 
-    // Review flags
+    // Review flags - use VALID detection count
     const reviewFlags = [];
-    if (totalDetections === 0) {
-      reviewFlags.push({ code: 'NO_DETECTIONS', view: 'all', message: 'No damage detected in any view' });
+    if (validDetectionCount === 0) {
+      reviewFlags.push({ code: 'NO_DETECTIONS', view: 'all', message: 'No valid damage detected in any view' });
     }
-    if (totalDetections > 15) {
-      reviewFlags.push({ code: 'HIGH_DETECTION_COUNT', view: 'all', message: 'Unusually high number of detections - verify image quality' });
+    if (validDetectionCount > 15) {
+      reviewFlags.push({ code: 'HIGH_DETECTION_COUNT', view: 'all', message: 'Unusually high number of valid detections - verify image quality' });
     }
     if (Object.values(viewStates).some(v => !v.file)) {
       reviewFlags.push({ code: 'INCOMPLETE_VIEWS', view: 'all', message: 'Not all required views uploaded' });
@@ -284,11 +289,13 @@ export function FourViewInference({
       'Cost estimates are approximate; actual repair costs may vary by location and labor rates',
       'Hidden/internal damage not visible in photos may exist',
       'Final settlement subject to physical inspection and policy terms',
+      'Only 6 validated damage classes (dent, scratch, crack, glass_shatter, lamp_broken, tire_flat) are used for cost estimation',
     ];
 
     return {
       views: viewResults,
-      totalDetections,
+      totalDetections: validDetectionCount, // Report only valid detections
+      totalRawDetections: totalRawDetections, // Keep raw count for debugging
       primaryComponent,
       damageSummary,
       severity,
@@ -752,10 +759,18 @@ export function FourViewInference({
 
                 <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                   <div className="rounded-xl border border-graphite-700 bg-graphite-900/50 p-4 text-center">
-                    <p className="text-xs text-graphite-500 uppercase tracking-wider mb-1">Total Detections</p>
+                    <p className="text-xs text-graphite-500 uppercase tracking-wider mb-1">Valid Detections</p>
                     <p className="font-bold text-2xl text-electric-400">
+                      {Object.values(inferenceResults).reduce((sum, v) => sum + v.detections.filter(d => VALID_DAMAGE_CLASSES.includes(d.className)).length, 0)}
+                    </p>
+                    <p className="text-xs text-graphite-500 mt-1">(6 insurance classes only)</p>
+                  </div>
+                  <div className="rounded-xl border border-graphite-700 bg-graphite-900/50 p-4 text-center">
+                    <p className="text-xs text-graphite-500 uppercase tracking-wider mb-1">Raw Detections</p>
+                    <p className="font-bold text-2xl text-graphite-400">
                       {Object.values(inferenceResults).reduce((sum, v) => sum + v.detections.length, 0)}
                     </p>
+                    <p className="text-xs text-graphite-500 mt-1">(includes filtered classes)</p>
                   </div>
                   <div className="rounded-xl border border-graphite-700 bg-graphite-900/50 p-4 text-center">
                     <p className="text-xs text-graphite-500 uppercase tracking-wider mb-1">Processing Time</p>
@@ -766,10 +781,6 @@ export function FourViewInference({
                   <div className="rounded-xl border border-graphite-700 bg-graphite-900/50 p-4 text-center">
                     <p className="text-xs text-graphite-500 uppercase tracking-wider mb-1">Model</p>
                     <p className="font-bold text-xl text-electric-400">YOLOv8 Local</p>
-                  </div>
-                  <div className="rounded-xl border border-graphite-700 bg-graphite-900/50 p-4 text-center">
-                    <p className="text-xs text-graphite-500 uppercase tracking-wider mb-1">Privacy</p>
-                    <p className="font-bold text-xl text-success-400">100% Local</p>
                   </div>
                 </div>
               </CardContent>
@@ -784,7 +795,8 @@ export function FourViewInference({
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 {REQUIRED_VIEWS.map((view) => {
                   const result = inferenceResults[view.id];
-                  const detections = result?.detections || [];
+                  const allDetections = result?.detections || [];
+                  const validDetections = allDetections.filter(d => VALID_DAMAGE_CLASSES.includes(d.className));
 
                   return (
                     <Card key={view.id} className="border-graphite-700 bg-graphite-900/50 overflow-hidden">
@@ -795,8 +807,8 @@ export function FourViewInference({
                           </span>
                           <span className="font-medium text-graphite-100">{view.label}</span>
                         </div>
-                        <Badge variant={detections.length > 0 ? 'default' : 'secondary'}>
-                          {detections.length} found
+                        <Badge variant={validDetections.length > 0 ? 'default' : 'secondary'}>
+                          {validDetections.length} valid / {allDetections.length} total
                         </Badge>
                       </div>
                       <div className="relative aspect-video overflow-hidden">
@@ -813,10 +825,10 @@ export function FourViewInference({
                         )}
                       </div>
                       <div className="p-3 space-y-2 max-h-40 overflow-y-auto text-center">
-                        {detections.length === 0 ? (
-                          <p className="text-sm text-graphite-500">No damage detected</p>
+                        {validDetections.length === 0 ? (
+                          <p className="text-sm text-graphite-500">No valid damage detected</p>
                         ) : (
-                          detections.map((det, i) => (
+                          validDetections.map((det, i) => (
                             <div key={i} className="flex items-center justify-center gap-2 text-sm p-2 rounded bg-graphite-800/50">
                               <span className="text-graphite-300">{formatDamageType(det.className)}</span>
                               <span className="font-mono text-electric-400">{(det.confidence * 100).toFixed(1)}%</span>

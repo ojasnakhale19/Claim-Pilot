@@ -363,9 +363,15 @@ DAMAGE_COST_MAP = {
 }
 
 
-def normalize_damage_type(name: str) -> str:
-    """Normalize damage type name to match cost map keys (use underscores)."""
-    return name.lower().replace(" ", "_").replace("-", "_")
+# ─── Valid Damage Classes for Insurance (matching frontend) ──────────────────
+VALID_DAMAGE_CLASSES = {
+    "dent", "scratch", "crack", "glass_shatter", "lamp_broken", "tire_flat"
+}
+
+def is_valid_damage_class(name: str) -> bool:
+    """Check if a damage class is valid for insurance assessment."""
+    normalized = normalize_damage_type(name)
+    return normalized in VALID_DAMAGE_CLASSES
 
 
 def estimate_costs(detections_by_view: Dict[str, Any]) -> tuple[int, int, str, str, str]:
@@ -381,22 +387,26 @@ def estimate_costs(detections_by_view: Dict[str, Any]) -> tuple[int, int, str, s
     for d in all_detections:
         d["damage_type"] = normalize_damage_type(d["damage_type"])
 
-    # Determine severity based on highest confidence detection and count
-    max_conf = max(d["confidence"] for d in all_detections)
-    total_count = len(all_detections)
+    # FILTER: Only keep valid damage classes for insurance assessment
+    valid_detections = [d for d in all_detections if is_valid_damage_class(d["damage_type"])]
+    
+    if not valid_detections:
+        return 0, 0, "uncertain", "Unable to determine", "No valid damage classes detected in the submitted images."
 
-    # Get most common damage type
+    # Determine severity based on highest confidence detection and count
+    max_conf = max(d["confidence"] for d in valid_detections)
+    total_valid_count = len(valid_detections)
+
+    # Get most common damage type from VALID detections only
     from collections import Counter
-    damage_types = [d["damage_type"] for d in all_detections]
+    damage_types = [d["damage_type"] for d in valid_detections]
     primary_damage = Counter(damage_types).most_common(1)[0][0]
 
     # Map to severity - use area percentage if available, otherwise confidence
-    # Check if any detection has area_percentage (from CarDamageDetector)
-    has_area = any("area_percentage" in d for d in all_detections)
+    has_area = any("area_percentage" in d for d in valid_detections)
     
     if has_area:
-        # Use max area percentage for severity
-        max_area = max(d.get("area_percentage", 0) for d in all_detections)
+        max_area = max(d.get("area_percentage", 0) for d in valid_detections)
         if max_area >= 15:
             severity = "severe"
         elif max_area >= 5:
@@ -406,10 +416,9 @@ def estimate_costs(detections_by_view: Dict[str, Any]) -> tuple[int, int, str, s
         else:
             severity = "minor"
     else:
-        # Fallback to confidence-based
-        if max_conf >= 0.7 and total_count >= 3:
+        if max_conf >= 0.7 and total_valid_count >= 3:
             severity = "severe"
-        elif max_conf >= 0.5 and total_count >= 2:
+        elif max_conf >= 0.5 and total_valid_count >= 2:
             severity = "moderate"
         elif max_conf >= 0.3:
             severity = "minor"
@@ -420,10 +429,18 @@ def estimate_costs(detections_by_view: Dict[str, Any]) -> tuple[int, int, str, s
     cost_map = DAMAGE_COST_MAP.get(primary_damage, DAMAGE_COST_MAP["damage"])
     min_cost, max_cost = cost_map.get(severity, cost_map["minor"])
 
-    # Adjust for multiple detections
-    if total_count > 1:
-        min_cost = int(min_cost * (1 + 0.3 * (total_count - 1)))
-        max_cost = int(max_cost * (1 + 0.3 * (total_count - 1)))
+    # Adjust for multiple UNIQUE damage types (not total detections)
+    unique_damage_types = set(damage_types)
+    unique_count = len(unique_damage_types)
+    
+    if unique_count > 1:
+        # Each additional unique damage type adds 30% to cost
+        min_cost = int(min_cost * (1 + 0.3 * (unique_count - 1)))
+        max_cost = int(max_cost * (1 + 0.3 * (unique_count - 1)))
+    elif total_valid_count > 1:
+        # Multiple detections of same type: smaller multiplier (10% per additional)
+        min_cost = int(min_cost * (1 + 0.1 * (total_valid_count - 1)))
+        max_cost = int(max_cost * (1 + 0.1 * (total_valid_count - 1)))
 
     # Component mapping
     component_map = {
@@ -439,7 +456,7 @@ def estimate_costs(detections_by_view: Dict[str, Any]) -> tuple[int, int, str, s
 
     # Summary
     unique_types = list(set(damage_types))
-    summary = f"Detected {total_count} damage instance(s): {', '.join(unique_types)}. Primary: {primary_damage} ({severity})."
+    summary = f"Detected {total_valid_count} valid damage instance(s): {', '.join(unique_types)}. Primary: {primary_damage} ({severity})."
 
     return min_cost, max_cost, severity, primary_component, summary
 
@@ -898,51 +915,69 @@ async def assess_general(
                 "damage_type": normalize_damage_type(d["damage_type"]),
                 "confidence": d["confidence"]
             })
-        damage_counter = Counter(d["damage_type"] for d in normalized_detections)
-        primary_damage = damage_counter.most_common(1)[0][0]
-        max_conf = max(d["confidence"] for d in normalized_detections)
-        total_count = len(normalized_detections)
-
-        if max_conf >= 0.7 and total_count >= 3:
-            severity = "severe"
-        elif max_conf >= 0.5 and total_count >= 2:
-            severity = "moderate"
-        elif max_conf >= 0.3:
-            severity = "minor"
-        else:
+        
+        # FILTER: Only keep valid damage classes for insurance assessment
+        valid_detections = [d for d in normalized_detections if is_valid_damage_class(d["damage_type"])]
+        
+        if not valid_detections:
             severity = "uncertain"
+            primary_component = "Unable to determine"
+            summary = f"Analyzed {len(files)} image(s). No valid damage classes detected."
+            total_cost_min = 0
+            total_cost_max = 0
+            settlement_offer = 0
+            settlement_min = 0
+            settlement_max = 0
+        else:
+            damage_counter = Counter(d["damage_type"] for d in valid_detections)
+            primary_damage = damage_counter.most_common(1)[0][0]
+            max_conf = max(d["confidence"] for d in valid_detections)
+            total_valid_count = len(valid_detections)
 
-        cost_map = DAMAGE_COST_MAP.get(primary_damage, DAMAGE_COST_MAP["damage"])
-        min_cost, max_cost = cost_map.get(severity, cost_map["minor"])
-        if total_count > 1:
-            min_cost = int(min_cost * (1 + 0.3 * (total_count - 1)))
-            max_cost = int(max_cost * (1 + 0.3 * (total_count - 1)))
+            if max_conf >= 0.7 and total_valid_count >= 3:
+                severity = "severe"
+            elif max_conf >= 0.5 and total_valid_count >= 2:
+                severity = "moderate"
+            elif max_conf >= 0.3:
+                severity = "minor"
+            else:
+                severity = "uncertain"
 
-        total_cost_min = min_cost
-        total_cost_max = max_cost
+            cost_map = DAMAGE_COST_MAP.get(primary_damage, DAMAGE_COST_MAP["damage"])
+            min_cost, max_cost = cost_map.get(severity, cost_map["minor"])
 
-        component_map = {
-            "dent": "Body Panel",
-            "scratch": "Body Panel",
-            "crack": "Bumper/Fender",
-            "glass_shatter": "Windshield/Window",
-            "lamp_broken": "Headlight/Taillight",
-            "tire_flat": "Tire/Wheel",
-            "damage": "Vehicle Component",
-        }
-        primary_component = component_map.get(primary_damage, "Vehicle Component")
-        unique_types = list(set(d["damage_type"] for d in normalized_detections))
-        summary = f"Analyzed {len(files)} image(s). Detected {total_count} damage instance(s): {', '.join(unique_types)}. Primary: {primary_damage} ({severity})."
-    else:
-        severity = "uncertain"
-        primary_component = "Unable to determine"
-        summary = f"Analyzed {len(files)} image(s). No supported damage classes detected."
-        total_cost_min = 0
-        total_cost_max = 0
+            # Adjust for multiple UNIQUE damage types (not total detections)
+            unique_damage_types = set(d["damage_type"] for d in valid_detections)
+            unique_count = len(unique_damage_types)
+            
+            if unique_count > 1:
+                # Each additional unique damage type adds 30% to cost
+                min_cost = int(min_cost * (1 + 0.3 * (unique_count - 1)))
+                max_cost = int(max_cost * (1 + 0.3 * (unique_count - 1)))
+            elif total_valid_count > 1:
+                # Multiple detections of same type: smaller multiplier (10% per additional)
+                min_cost = int(min_cost * (1 + 0.1 * (total_valid_count - 1)))
+                max_cost = int(max_cost * (1 + 0.1 * (total_valid_count - 1)))
 
-    settlement_offer = int((total_cost_min + total_cost_max) / 2 * 0.7) if total_cost_min > 0 else 0
-    settlement_min = int(total_cost_min * 0.55) if total_cost_min > 0 else 0
-    settlement_max = int(total_cost_max * 0.85) if total_cost_max > 0 else 0
+            total_cost_min = min_cost
+            total_cost_max = max_cost
+
+            component_map = {
+                "dent": "Body Panel",
+                "scratch": "Body Panel",
+                "crack": "Bumper/Fender",
+                "glass_shatter": "Windshield/Window",
+                "lamp_broken": "Headlight/Taillight",
+                "tire_flat": "Tire/Wheel",
+                "damage": "Vehicle Component",
+            }
+            primary_component = component_map.get(primary_damage, "Vehicle Component")
+            unique_types = list(set(d["damage_type"] for d in valid_detections))
+            summary = f"Analyzed {len(files)} image(s). Detected {total_valid_count} valid damage instance(s): {', '.join(unique_types)}. Primary: {primary_damage} ({severity})."
+
+        settlement_offer = int((total_cost_min + total_cost_max) / 2 * 0.7) if total_cost_min > 0 else 0
+        settlement_min = int(total_cost_min * 0.55) if total_cost_min > 0 else 0
+        settlement_max = int(total_cost_max * 0.85) if total_cost_max > 0 else 0
 
     # Determine if review is required (any low confidence detections or no detections)
     review_required = False
@@ -1072,46 +1107,10 @@ async def assess_hybrid(request: HybridAssessmentRequest):
             "confidence": item.get("confidence", 0.5),
         })
     
-    # Use existing cost estimation but with AI-determined severity
-    if all_ai_detections:
-        max_conf = max(d["confidence"] for d in all_ai_detections)
-        total_count = len(all_ai_detections)
-        damage_types = [d["damage_type"] for d in all_ai_detections]
-        from collections import Counter
-        primary_damage = Counter(damage_types).most_common(1)[0][0] if damage_types else "damage"
-        
-        if max_conf >= 0.7 and total_count >= 3:
-            severity = "severe"
-        elif max_conf >= 0.5 and total_count >= 2:
-            severity = "moderate"
-        elif max_conf >= 0.3:
-            severity = "minor"
-        else:
-            severity = "uncertain"
-        
-        cost_map = DAMAGE_COST_MAP.get(primary_damage, DAMAGE_COST_MAP["damage"])
-        min_cost, max_cost = cost_map.get(severity, cost_map["minor"])
-        if total_count > 1:
-            min_cost = int(min_cost * (1 + 0.3 * (total_count - 1)))
-            max_cost = int(max_cost * (1 + 0.3 * (total_count - 1)))
-    else:
-        severity = "uncertain"
-        min_cost = 0
-        max_cost = 0
-        primary_damage = "damage"
-    
-    component_map = {
-        "dent": "Body Panel",
-        "scratch": "Body Panel",
-        "crack": "Bumper/Fender",
-        "glass_shatter": "Windshield/Window",
-        "lamp_broken": "Headlight/Taillight",
-        "tire_flat": "Tire/Wheel",
-        "damage": "Vehicle Component",
-    }
-    primary_component = component_map.get(primary_damage, "Vehicle Component")
-    unique_types = list(set([d["damage_type"] for d in all_ai_detections]))
-    summary = f"Hybrid AI: {len(all_ai_detections)} damage instance(s): {', '.join(unique_types)}. Primary: {primary_damage} ({severity})."
+    # Use the fixed estimate_costs function for consistent pricing
+    # Convert AI detections to the format expected by estimate_costs
+    detections_by_view = {"top": {"detections": all_ai_detections}}
+    min_cost, max_cost, severity, primary_component, summary = estimate_costs(detections_by_view)
     
     settlement_offer = int((min_cost + max_cost) / 2 * 0.7) if min_cost > 0 else 0
     settlement_min = int(min_cost * 0.55) if min_cost > 0 else 0
