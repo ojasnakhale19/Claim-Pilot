@@ -691,8 +691,73 @@ export function ClaimFlowPage() {
 
   const handleConfirmOffer = useCallback(async () => {
     if (!assessment) return;
+    
+    // Calculate settlement breakdown to check for exclusions before confirming
+    const data = assessment.data;
+    const grossMin = data.costMin;
+    const grossMax = data.costMax;
+    const avgGross = (grossMin + grossMax) / 2;
+    
+    // Calculate depreciation
+    const vehicleAge = vehicleInfo.year ? new Date().getFullYear() - parseInt(vehicleInfo.year) : 5;
+    let depreciationPct = 0;
+    if (vehicleAge > 10) { depreciationPct = 0.35; }
+    else if (vehicleAge > 7) { depreciationPct = 0.25; }
+    else if (vehicleAge > 4) { depreciationPct = 0.15; }
+    else if (vehicleAge > 1) { depreciationPct = 0.08; }
+    else { depreciationPct = 0.03; }
+    if (data.severity === 'severe') depreciationPct += 0.05;
+    else if (data.severity === 'minor') depreciationPct -= 0.02;
+    depreciationPct = Math.max(0.03, Math.min(0.5, depreciationPct));
+    const depreciationAmount = Math.round(avgGross * depreciationPct);
+    
+    // Deductible
+    const deductibleAmount = 1000;
+    
+    // Check for exclusions
+    const exclusionaryCauses = [
+      { keyword: 'wear', description: 'Wear and tear', amount: 0.15 },
+      { keyword: 'tear', description: 'Wear and tear', amount: 0.15 },
+      { keyword: 'rust', description: 'Rust/corrosion', amount: 0.20 },
+      { keyword: 'corrosion', description: 'Rust/corrosion', amount: 0.20 },
+      { keyword: 'mechanical failure', description: 'Mechanical failure', amount: 0.25 },
+      { keyword: 'electrical fault', description: 'Electrical fault', amount: 0.20 },
+      { keyword: 'intentional', description: 'Intentional damage', amount: 0.50 },
+      { keyword: 'racing', description: 'Racing/competition', amount: 0.50 },
+      { keyword: 'drunk', description: 'DUI/impairment', amount: 0.50 },
+      { keyword: 'dui', description: 'DUI/impairment', amount: 0.50 },
+      { keyword: 'under influence', description: 'DUI/impairment', amount: 0.50 },
+      { keyword: 'flood', description: 'Flood damage', amount: 0.30 },
+      { keyword: 'fire', description: 'Fire damage', amount: 0.30 },
+    ];
+    const excludedItems: string[] = [];
+    let totalExclusionPct = 0;
+    for (const exc of exclusionaryCauses) {
+      if (vehicleInfo.causeOfDamage.toLowerCase().includes(exc.keyword)) {
+        excludedItems.push(exc.description);
+        totalExclusionPct += exc.amount;
+      }
+    }
+    
     const finalAmount = currentOffer || assessment.data.settlementOffer;
     const claimRef = `CP-${generateId('').slice(0, 8).toUpperCase()}`;
+    
+    // If exclusions detected, escalate to human review instead of confirming
+    if (excludedItems.length > 0) {
+      const exclusionAmount = Math.round(avgGross * totalExclusionPct);
+      const netAfterExclusion = Math.round(avgGross - depreciationAmount - deductibleAmount - exclusionAmount);
+      
+      addMessage({ 
+        sender: 'bot', 
+        text: `⚠️ **Policy Exclusion Detected**\n\nBased on the reported cause ("${vehicleInfo.causeOfDamage}"), this claim involves policy exclusions: ${excludedItems.join(', ')}.\n\nAs per policy terms, such damages may be excluded or partially covered. The calculated settlement after exclusion would be ₹${netAfterExclusion.toLocaleString('en-IN')}.\n\nThis requires human review by a claims adjuster for policy coverage determination. I cannot auto-confirm this settlement.\n\nRedirecting to human review...`,
+        isOffer: false,
+      });
+      setPreviousStage('chat');
+      setStage('humanReview');
+      return;
+    }
+    
+    // No exclusions - proceed with confirmation
     addMessage({ 
       sender: 'bot', 
       text: `Settlement confirmed at ₹${formatNumber(finalAmount)}. Claim reference: ${claimRef}. Generating detailed damage report...`,
@@ -704,7 +769,7 @@ export function ClaimFlowPage() {
     
     // Generate detailed damage report after confirmation
     setTimeout(() => generateDamageReportForClaim(claimRef, finalAmount), 500);
-  }, [assessment, currentOffer, addMessage]);
+  }, [assessment, currentOffer, addMessage, vehicleInfo]);
 
   const generateDamageReportForClaim = useCallback(async (claimRef: string, finalAmount: number) => {
     if (!assessment) return;
@@ -1394,6 +1459,7 @@ export function ClaimFlowPage() {
                         assessment={assessment}
                         onSendMessage={handleSendMessage}
                         onConfirmOffer={handleConfirmOffer}
+                        onEscalate={handleHumanReview}
                         onIncreaseOffer={() => {
                           const data = assessment!.data;
                           const newOffer = Math.min(data.settlementMax, (currentOffer || data.settlementOffer) + 500);

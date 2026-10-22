@@ -35,6 +35,7 @@ interface FuturisticChatProps {
   onSendMessage: () => void;
   onConfirmOffer: () => void;
   onIncreaseOffer: () => void;
+  onEscalate?: () => void;
   disabled?: boolean;
 }
 
@@ -52,13 +53,16 @@ function SettlementBreakdownModal({
   breakdown, 
   isOpen, 
   onClose, 
-  onConfirm 
+  onConfirm,
+  onEscalate
 }: { 
   breakdown: SettlementBreakdown; 
   isOpen: boolean; 
   onClose: () => void; 
-  onConfirm: () => void; 
+  onConfirm: () => void;
+  onEscalate?: () => void;
 }) {
+  const hasExclusions = breakdown.exclusions && breakdown.exclusions.length > 0;
   if (!isOpen || !breakdown) return null;
 
   return (
@@ -265,18 +269,48 @@ function SettlementBreakdownModal({
               <X className="h-4 w-4 mr-2" />
               Close
             </motion.button>
-            <motion.button
-              onClick={onConfirm}
-              className="flex-1 gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-success-500 to-emerald-500 text-background font-semibold shadow-[0_0_30px_-5px_rgba(34,197,94,0.4)] hover:from-success-400 hover:to-emerald-400 transition-all"
-              whileHover={{ y: -2, boxShadow: '0 0 40px -5px rgba(34,197,94,0.5)' }}
-              whileTap={{ scale: 0.98 }}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.9 }}
-            >
-              <CheckCircle className="h-4 w-4" />
-              Confirm Settlement
-            </motion.button>
+            {hasExclusions ? (
+              <>
+                <motion.button
+                  onClick={onEscalate || onClose}
+                  className="flex-1 gap-2 px-6 py-3 rounded-xl border-2 border-amber-500/50 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 hover:border-amber-500 transition-all font-medium"
+                  whileHover={{ y: -2 }}
+                  whileTap={{ scale: 0.98 }}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.9 }}
+                >
+                  <AlertTriangle className="h-4 w-4" />
+                  Escalate to Human Review
+                </motion.button>
+                <motion.button
+                  onClick={onConfirm}
+                  className="flex-1 gap-2 px-6 py-3 rounded-xl border border-graphite-600 bg-transparent text-graphite-400 hover:border-graphite-400 hover:text-graphite-300 transition-all font-medium opacity-50 cursor-not-allowed"
+                  whileHover={{ y: -2 }}
+                  whileTap={{ scale: 0.98 }}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.9 }}
+                  disabled
+                >
+                  <CheckCircle className="h-4 w-4" />
+                  Confirm Settlement (Blocked)
+                </motion.button>
+              </>
+            ) : (
+              <motion.button
+                onClick={onConfirm}
+                className="flex-1 gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-success-500 to-emerald-500 text-background font-semibold shadow-[0_0_30px_-5px_rgba(34,197,94,0.4)] hover:from-success-400 hover:to-emerald-400 transition-all"
+                whileHover={{ y: -2, boxShadow: '0 0 40px -5px rgba(34,197,94,0.5)' }}
+                whileTap={{ scale: 0.98 }}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.9 }}
+              >
+                <CheckCircle className="h-4 w-4" />
+                Confirm Settlement
+              </motion.button>
+            )}
           </div>
         </motion.div>
       </motion.div>
@@ -296,6 +330,7 @@ export function FuturisticChat({
   onSendMessage,
   onConfirmOffer,
   onIncreaseOffer,
+  onEscalate,
   disabled = false,
 }: FuturisticChatProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -677,6 +712,7 @@ export function FuturisticChat({
           isOpen={showSettlementBreakdown}
           onClose={() => setShowSettlementBreakdown(false)}
           onConfirm={onConfirmOffer}
+          onEscalate={onEscalate}
         />
     </div>
   );
